@@ -1,5 +1,7 @@
 import re
-from typing import Dict, Any, List
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Any, List, Tuple
 from tqdm import tqdm
 import datetime
 import json
@@ -7,6 +9,17 @@ import json
 from aag.utils.file_operation import file_exist
 from aag.utils.parse_json import extract_json_from_response
 from aag.reasoner.model_deployment import OllamaEnv
+from aag.reasoner.model_deployment import OpenAIEnv
+
+
+def _llm_completion_text(raw: Any) -> str:
+    """将 Ollama completion（含 .text）、OpenAI 的 str、或 None 统一为纯文本。"""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return (getattr(raw, "text", None) or "") or ""
+
 
 prompt_template_str = """
 #### Process
@@ -138,7 +151,7 @@ OTHER
 
 
 class Text2Graph:
-    def __init__(self, file_path: str, graph_name: str, llm_name: str, chunk_size: int = 512):
+    def __init__(self, type: str, file_path: str, graph_name: str, llm_name: str, api_key: str, chunk_size: int = 512, base_url: str = None, thread_count: int = 1):
         """
         初始化文本到图转换器
         
@@ -147,6 +160,8 @@ class Text2Graph:
         """
         self.file_path = file_path
         self.graph_name = graph_name
+        self.thread_count = thread_count
+        self.chunk_size = chunk_size
 
         if not file_exist(self.file_path):
             raise FileNotFoundError(f"文本文件未找到: {self.file_path}")
@@ -167,8 +182,13 @@ class Text2Graph:
             self.text_chunks.append(current_chunk)
         
         print(f"文本已加载，共 {len(self.text_chunks)} 个块, 每块约 {chunk_size} 字符。")
-
-        self.llm = OllamaEnv(llm_mode_name = llm_name)
+        if type == "ollama":
+            self.llm = OllamaEnv(llm_mode_name = llm_name)
+        elif type == "openai":
+            self.llm = OpenAIEnv(api_key = api_key, model_name = llm_name, base_url = base_url)
+            print(f"使用 OpenAI 模型: {llm_name}")
+        else:
+            raise ValueError(f"不支持的类型: {type}")
 
     def read_file_path(self) -> str:
         import os
@@ -248,13 +268,13 @@ class Text2Graph:
         for idx, chunk in enumerate(tqdm(self.text_chunks)):
             
             for attempt in range(1, MAX_RETRIES + 1):
-                response = self.llm.generate_response(query=prompt_template_str.format(context=chunk))
-                # 判空
-                if not response:
+                raw = self.llm.generate_response(query=prompt_template_str.format(context=chunk))
+                text = _llm_completion_text(raw)
+                if not text:
                     print(f"⚠️ 块 {idx} 第 {attempt} 次尝试未获得响应")
                     continue
                 # 尝试解析 JSON
-                response_parsed = extract_json_from_response(response)
+                response_parsed = extract_json_from_response(text)
                 if isinstance(response_parsed, str):
                     print(f"⚠️ 块 {idx} 第 {attempt} 次响应解析失败")
                     continue
@@ -291,7 +311,7 @@ class Text2Graph:
             for triplet in response.get("triplets", []):
                 # 1️⃣ 必须是列表/元组且长度为3
                 if not isinstance(triplet, (list, tuple)) or len(triplet) != 3:
-                    print(f"⚠️ 无效三元组，跳过: {triplet}")
+                    #print(f"⚠️ 无效三元组，跳过: {triplet}")
                     continue
                 
                 # 2️⃣ 遍历每个元素，处理字符串大小写
@@ -306,7 +326,7 @@ class Text2Graph:
 
             triplets.extend(new_triplets)
 
-        print(f"提取完成，共获得 {len(triplets)} 个三元组。")
+        #print(f"提取完成，共获得 {len(triplets)} 个三元组。")
         return triplets
 
     def save_triplet(self, triplets: List[List[str]]):
@@ -319,16 +339,16 @@ class Text2Graph:
         valid_triplets = []
         for t in triplets:
             if len(t) != 3:
-                print(f"⚠️ 无效三元组，跳过: {t}")
+                #print(f"⚠️ 无效三元组，跳过: {t}")
                 continue
             head, rel, tail = t
             if not head or not tail or not rel:
-                print(f"⚠️ 三元组元素为空，跳过: {t}")
+                #print(f"⚠️ 三元组元素为空，跳过: {t}")
                 continue
             valid_triplets.append([head, rel, tail])
 
         if not valid_triplets:
-            print("⚠️ 没有合法三元组，退出。")
+            #print("⚠️ 没有合法三元组，退出。")
             return
 
         entities = {}
@@ -351,8 +371,8 @@ class Text2Graph:
             for head, rel, tail in valid_triplets:
                 writer.writerow([entities[head], entities[tail], rel])
 
-        print(f"✅ 实体 CSV 保存到: {entities_csv_path}")
-        print(f"✅ 边 CSV 保存到: {triplets_csv_path}")
+        #print(f"✅ 实体 CSV 保存到: {entities_csv_path}")
+        #print(f"✅ 边 CSV 保存到: {triplets_csv_path}")
 
         schema_path = os.path.join(dir_path, f"{base_name}_graph_schemas.yaml")
         graph_name = f"{base_name}_Graph"
@@ -408,7 +428,7 @@ class Text2Graph:
         with open(schema_path, "w", encoding="utf-8") as f:
             yaml.dump(schema_dict, f, sort_keys=False, allow_unicode=True)
 
-        print(f"✅ Graph schema YAML: {schema_path}")
+        #  print(f"✅ Graph schema YAML: {schema_path}")
 
     def extract_graph_by_openie(self):
         print("开始使用OpenIE从文本中提取知识图谱...")
@@ -417,13 +437,13 @@ class Text2Graph:
         except ImportError:
             import subprocess, sys
             package_name = "stanford-openie"
-            print(f"⚙️ 检测到未安装依赖 '{package_name}'，正在自动安装...")
+            #print(f"⚙️ 检测到未安装依赖 '{package_name}'，正在自动安装...")
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-                print(f"✅ 成功安装 {package_name}")
+                #print(f"✅ 成功安装 {package_name}")
                 from openie import StanfordOpenIE  # 再次导入
             except subprocess.CalledProcessError as e:
-                print(f"❌ 安装 {package_name} 失败，请手动安装：pip install {package_name}")
+                #print(f"❌ 安装 {package_name} 失败，请手动安装：pip install {package_name}")
                 raise e
         
         triplets = []
@@ -438,7 +458,7 @@ class Text2Graph:
                     tail = triple['object'].strip().capitalize()
                     triplet = [head, relation, tail]
                     triplets.append(triplet)
-        print(f"提取完成，共获得 {len(triplets)} 个三元组。")
+        #print(f"提取完成，共获得 {len(triplets)} 个三元组。")
         print(triplets)
         assert False, "stop here"
         return triplets
@@ -459,9 +479,10 @@ class Text2Graph:
         for idx, chunk in enumerate(tqdm(self.text_chunks)):
 
             for attempt in range(1, MAX_RETRIES + 1):
-                response = self.llm.generate_response(query=prompt_template_str.format(context=chunk)).text
+                raw = self.llm.generate_response(query=prompt_template_str.format(context=chunk))
+                response = _llm_completion_text(raw)
                 if not response:
-                    print(f"⚠️ 块 {idx} 第 {attempt} 次无响应")
+                    #print(f"⚠️ 块 {idx} 第 {attempt} 次无响应")
                     continue
                 
                 cleaned = response.strip()
@@ -472,7 +493,7 @@ class Text2Graph:
                 # match {} content
                 match = re.search(r'\{[\s\S]*\}', cleaned)
                 if not match:
-                    print(f"❌ 未找到 JSON 内容，原始响应:\n{cleaned}")
+                    #print(f"❌ 未找到 JSON 内容，原始响应:\n{cleaned}")
                     continue
 
                 json_str = match.group(0)
@@ -481,16 +502,16 @@ class Text2Graph:
                     response_parsed = json.loads(json_str)
                 except json.JSONDecodeError as e:
                     # JSON 解析失败，记录日志并跳过当前条目
-                    print(f"[Warning] JSON parsing failed at index {idx} of {attempt}: {e}")
+                    #print(f"[Warning] JSON parsing failed at index {idx} of {attempt}: {e}")
                     continue
 
                 if not isinstance(response_parsed, dict):
-                    print(f"⚠️ 块 {idx} 第 {attempt} 次 JSON 解析失败")
+                    #print(f"⚠️ 块 {idx} 第 {attempt} 次 JSON 解析失败")
                     continue
                 response = response_parsed
                 break
             else:
-                print(f"❌ 块 {idx} 超过 {MAX_RETRIES} 次尝试失败，跳过")
+                #print(f"❌ 块 {idx} 超过 {MAX_RETRIES} 次尝试失败，跳过")
                 continue
             
                 
@@ -511,7 +532,7 @@ class Text2Graph:
             new_triplets = []
             for triplet in response.get("triplets", []):
                 if not isinstance(triplet, (list, tuple)) or len(triplet) != 3:
-                    print(f"⚠️ 无效三元组，跳过: {triplet}")
+                    #print(f"⚠️ 无效三元组，跳过: {triplet}")
                     continue
                 # 去掉空字符串，只保留非空字符串和数字/其他类型
                 clean_triplet = []
@@ -531,7 +552,8 @@ class Text2Graph:
                         print(clean_triplet)
                         print(len(clean_triplet))
                 else:
-                    print(f"⚠️ 三元组长度不足3，跳过: {triplet}")
+                    #print(f"⚠️ 三元组长度不足3，跳过: {triplet}")
+                    pass
 
             triplets.extend(new_triplets)
 
@@ -562,17 +584,145 @@ class Text2Graph:
         # ======================
         entity2id = {ent: i + 1 for i, ent in enumerate(entity2type.keys())}
 
+        #  print(f"✅ 提取完成，共 {len(triplets)} 个三元组，{len(entity2id)} 个实体")
+        return triplets, entity2id, entity2type
+
+    def extract_graph_and_entity_by_LLM_with_mutiple(self, each_dataset, file_name, each_dataset_schema_file_path, MAX_RETRIES = 5):
+        """
+        从文本数据中提取三元组与实体类型（多线程：最多同时处理 5 个 chunk）。
+
+        Returns:
+            triplets: 合法三元组列表
+            entity2id: 实体 -> ID
+            entity2type: 实体 -> 类型
+        """
+        import yaml
+
+        print(f"开始使用 LLM 从文本中提取知识图谱（多线程，最多 {self.thread_count} 个 chunk 并行）...")
+        n_chunks = len(self.text_chunks)
+        if n_chunks == 0:
+            return [], {}, {}
+
+        def process_one_chunk(idx: int, chunk: str) -> Tuple[int, List[List[str]], Dict[str, str]]:
+            """单 chunk：与串行版相同逻辑，实体类型用 chunk 内局部表，合并时按 chunk 序号先到先得。"""
+            new_triplets: List[List[str]] = []
+            entity2type_local: Dict[str, str] = {}
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                raw = self.llm.generate_response(query=prompt_template_str.format(context=chunk))
+                response = _llm_completion_text(raw)
+                if not response:
+                    print(f"⚠️ 块 {idx} 第 {attempt} 次无响应")
+                    continue
+
+                cleaned = response.strip()
+                cleaned = re.sub(r"^```[a-zA-Z]*\n?|```$", "", cleaned, flags=re.MULTILINE).strip()
+                match = re.search(r'\{[\s\S]*\}', cleaned)
+                if not match:
+                    print(f"❌ 未找到 JSON 内容，原始响应:\n{cleaned}")
+                    continue
+
+                json_str = match.group(0)
+                try:
+                    response_parsed = json.loads(json_str)
+                except json.JSONDecodeError as e:
+                    print(f"[Warning] JSON parsing failed at index {idx} of {attempt}: {e}")
+                    continue
+
+                if not isinstance(response_parsed, dict):
+                    print(f"⚠️ 块 {idx} 第 {attempt} 次 JSON 解析失败")
+                    continue
+                response = response_parsed
+                break
+            else:
+                print(f"❌ 块 {idx} 超过 {MAX_RETRIES} 次尝试失败，跳过")
+                return idx, [], {}
+
+            entities_from_response = {}
+            if isinstance(response.get("entities"), dict):
+                for entity_type, names in response["entities"].items():
+                    for name in names:
+                        if isinstance(name, str) and name.strip():
+                            entities_from_response[name.strip()] = entity_type.strip().capitalize()
+
+            for triplet in response.get("triplets", []):
+                if not isinstance(triplet, (list, tuple)) or len(triplet) != 3:
+                    print(f"⚠️ 无效三元组，跳过: {triplet}")
+                    continue
+                clean_triplet = []
+                for x in triplet:
+                    if isinstance(x, str):
+                        x_clean = x.strip()
+                        if x_clean:
+                            clean_triplet.append(x_clean.capitalize())
+                    else:
+                        if x is not None:
+                            clean_triplet.append(str(x))
+
+                if len(clean_triplet) == 3:
+                    new_triplets.append(clean_triplet)
+                    if clean_triplet[0] == "New york":
+                        print(clean_triplet)
+                        print(len(clean_triplet))
+                else:
+                    print(f"⚠️ 三元组长度不足3，跳过: {triplet}")
+
+            for head, rel, tail in new_triplets:
+                for ent in [head, tail]:
+                    if ent not in entity2type_local:
+                        if ent in entities_from_response:
+                            entity2type_local[ent] = entities_from_response[ent]
+                        else:
+                            entity2type_local[ent] = self._ask_entity_type(ent, chunk, MAX_RETRIES)
+
+            return idx, new_triplets, entity2type_local
+
+        results: Dict[int, Tuple[List[List[str]], Dict[str, str]]] = {}
+        yaml_lock = threading.Lock()
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=self.thread_count) as executor:
+            future_to_idx = {
+                executor.submit(process_one_chunk, idx, chunk): idx
+                for idx, chunk in enumerate(self.text_chunks)
+            }
+            for fut in tqdm(as_completed(future_to_idx), total=n_chunks, desc="LLM chunks"):
+                idx, new_triplets, entity2type_local = fut.result()
+                results[idx] = (new_triplets, entity2type_local)
+                with yaml_lock:
+                    completed += 1
+                    each_dataset[file_name]["parsing_rate"] = completed / n_chunks
+                    output_file = [each_dataset[k] for k in each_dataset]
+                    final_schema = {"datasets": output_file}
+                    with open(each_dataset_schema_file_path, "w", encoding="utf-8") as f:
+                        yaml.dump(final_schema, f, sort_keys=False, allow_unicode=True)
+
+        triplets: List[List[str]] = []
+        entity2type: Dict[str, str] = {}
+        for idx in range(n_chunks):
+            if idx not in results:
+                continue
+            new_triplets, entity2type_local = results[idx]
+            triplets.extend(new_triplets)
+            for ent, typ in entity2type_local.items():
+                if ent not in entity2type:
+                    entity2type[ent] = typ
+
+        entity2id = {ent: i + 1 for i, ent in enumerate(entity2type.keys())}
+
         print(f"✅ 提取完成，共 {len(triplets)} 个三元组，{len(entity2id)} 个实体")
         return triplets, entity2id, entity2type
+
+
 
     def _ask_entity_type(self, entity: str, chunk: str, MAX_RETRIES = 5) -> str:
         """向 LLM 查询实体类型"""
         prompt = prompt_entity_type.format(entity=entity, text_context=chunk)
         for attempt in range(1, MAX_RETRIES + 1):
-            response = self.llm.generate_response(query=prompt).text
+            response = _llm_completion_text(self.llm.generate_response(query=prompt))
             if response and isinstance(response, str):
                 return response.strip().capitalize()
-        print(f"⚠️ 无法确定实体类型：{entity}，默认设为 Unknown")
+        #print(f"⚠️ 无法确定实体类型：{entity}，默认设为 Unknown")
         return "Unknown"
     
     def save_graph_with_entity(self, triplets: List[List[str]], entity2id: Dict[str, int], entity2type: Dict[str, str], 
@@ -728,7 +878,8 @@ class Text2Graph:
                         if yaml_content and "datasets" in yaml_content:
                             datasets = yaml_content["datasets"]
                 except Exception as e:
-                    print(f"读取 YAML 失败: {e}")
+                    pass
+                    #print(f"读取 YAML 失败: {e}")
 
             datasets.append(new_dataset)
             final_schema = {"datasets": datasets}

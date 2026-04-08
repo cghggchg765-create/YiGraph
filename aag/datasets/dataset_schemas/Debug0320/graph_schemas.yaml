@@ -1,0 +1,783 @@
+datasets:
+- description: debug_document1.md graph generated from /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-20 22:55:14'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 36
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 26
+- description: debug_document1.md graph generated from /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-21 12:07:04'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 41
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 50
+- description: debug_document1.md graph generated from /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-22 17:27:57'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/caiy/aag_zzh/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 41
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 50
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-22 20:35:18'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 102
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 127
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-22 20:44:00'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 0
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 0
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-22 21:05:27'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 100
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 119
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-22 22:26:56'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 831
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 672
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-22 22:41:37'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 835
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 663
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 10:14:57'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 0
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 0
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 10:21:01'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 0
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 0
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 16:42:43'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 713
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 552
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 16:54:11'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 447
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 403
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 17:44:36'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 8
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 9
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 17:46:58'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 29
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 38
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 17:53:05'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 35
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 46
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 19:36:56'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 35
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 46
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 19:40:26'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 80
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 68
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 20:06:03'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 12
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 16
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 20:34:56'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 36
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 49
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 20:40:14'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 40
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 49
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 21:00:28'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 130
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 139
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 22:50:22'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 0
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 0
+- description: debug_document1.md graph generated from /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/demo_document1.md
+  name: debug_document1.md
+  type: graph
+  graph_status: completed
+  create_time: '2026-03-24 22:53:13'
+  schema:
+    vertex:
+    - attribute_fields: []
+      format: csv
+      id_field: acct_id
+      label_field: dsply_nm
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_accounts.csv
+      type: account
+    edge:
+    - attribute_fields: []
+      format: csv
+      label_field: bene_acct
+      path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/Debug0320/text/debug_document1.md_transactions.csv
+      source_field: tran_id
+      target_field: orig_acct
+      type: transfer
+      weight_field: null
+    graph:
+      directed: 'true'
+      heterogeneous: 'false'
+      multigraph: 'false'
+      weighted: 'false'
+    graph_store_info:
+      backend: nebula_graph
+      edge_count: 58
+      space_name: debug_document1.md
+      status: success
+      version: 'null'
+      vertex_count: 80

@@ -1,4 +1,17 @@
+#!/usr/bin/env python3
 # api.py
+#
+# When running `python aag/api/DocumentAPI.py` from the repo root, Python's
+# `sys.path[0]` becomes `.../aag/api`, which does NOT include the repo root.
+# Then imports like `from aag.utils...` fail with `ModuleNotFoundError: aag`.
+# To make the script runnable directly, we add the repo root to `sys.path`.
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import json
 import asyncio
 from tqdm import tqdm
@@ -677,6 +690,14 @@ class DocumentAPIServer:
     async def parsing_text_file(self, websocket, message):
         file_name = message["file_name"]
         ds_name = message["ds_name"]
+        type = message.get("type", "ollama")
+        api_key = message.get("api_key", "")
+        base_url = message.get("base_url", None)
+        llm_name = message.get("llm_name", "glm-5")
+        mode = message.get("mode", "single")
+        thread_count = message.get("thread_count", 1)
+        chunk_size = message.get("chunk_size", 512)
+
 
         self.load_each_dataset(ds_name)
 
@@ -708,15 +729,24 @@ class DocumentAPIServer:
             file_path = self.each_dataset[file_name]["schema"]["path"]
             graph_name = file_name
             text_2_graph = Text2Graph(
+                base_url=base_url,
+                type=type,
                 file_path=file_path,
                 graph_name=graph_name,
-                llm_name='llama3:8b',
-                chunk_size=512
+                llm_name=llm_name,
+                api_key=api_key,
+                chunk_size=chunk_size,
+                thread_count=thread_count
             )
 
             await websocket.send(json.dumps({"type": "status", "message": "Extracting triplets and entities..."}))
 
-            triplets, entity2id, entity2type = text_2_graph.extract_graph_and_entity_by_LLM(self.each_dataset, file_name, self.each_dataset_schema_file)
+            if mode == "single":
+                triplets, entity2id, entity2type = text_2_graph.extract_graph_and_entity_by_LLM(self.each_dataset, file_name, self.each_dataset_schema_file)
+            elif mode == "multiple":
+                triplets, entity2id, entity2type = text_2_graph.extract_graph_and_entity_by_LLM_with_mutiple(self.each_dataset, file_name, self.each_dataset_schema_file)
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
 
             await websocket.send(json.dumps({"type": "status", "message": "Saving graph..."}))
 
@@ -1259,7 +1289,7 @@ class DocumentAPIServer:
                 }, ensure_ascii=False))
                 return
 
-            if self.each_dataset[file_name].get("graph_status", "") != "parsing":
+            if self.each_dataset[file_name].get("graph_status", "") != "parsing" and self.each_dataset[file_name].get("graph_status", "") != "completed":
                 await websocket.send(json.dumps({
                     "type": "error",
                     "contentType": "text",
@@ -1329,10 +1359,35 @@ async def main():
     class DummySocket:
         """模拟前端 websocket"""
         async def send(self, msg):
-            #print("[TEST OUTPUT]", msg)
-            pass
+            # In __main__ mode we only have a dummy websocket; print responses
+            # so running this file directly shows what's going on.
+            print("[TEST OUTPUT]", msg, flush=True)
 
         def __init__(self):
+            self.message = json.dumps({"action": "parsing_file", 
+                            "file_name": "debug_document1.md",
+                            "ds_name": "Debug0320",
+                            "type": "openai",
+                            "api_key": "sk-15039969922b4f4c87f02ebea43244d7",
+                            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/",
+             
+                            "llm_name": "qwen-plus",
+                            "mode":"single",
+                            "thread_count": 1,
+                            "chunk_size": 512
+                            })
+             #self.message = json.dumps({"action": "parsing_file", 
+                                #"file_name": "debug_document1.md",
+                                #"ds_name": "Debug0320",
+                                #"type": "ollama",
+                                #"llm_name": "llama3.2:3b",
+                                #"mode":"single",
+                                #"thread_count": 1,
+                                #"chunk_size": 5120
+                                #})
+            #self.message = json.dumps({"action":"schema_refine", 
+            #                 "file_name": "debug_document1.md",
+            #                 "ds_name": "Debug0320"})
             # 模拟前端发送两条消息：创建和删除
             # self.message = json.dumps({"action": "create_dataset", 
             #                 "name": "fzb_debug_graph",
@@ -1367,9 +1422,9 @@ async def main():
             # self.message = json.dumps({"action": "get_file_triplets", 
             #                 "file_name": "example.txt",
             #                 "ds_name": "fzb_debug"})
-            self.message = json.dumps({"action": "get_file_triplets", 
-                            "file_name": "paper4.pdf",
-                            "ds_name": "fzb_debug"})
+            # self.message = json.dumps({"action": "get_file_triplets", 
+            #                 "file_name": "paper4.pdf",
+            #                 "ds_name": "fzb_debug"})
             # self.message = json.dumps({"action": "get_file_triplets_from_graph_dataset", 
             #                 # "file_name": "example.docx_transactions.csv",
             #                 "ds_name": "fzb_debug_graph"})

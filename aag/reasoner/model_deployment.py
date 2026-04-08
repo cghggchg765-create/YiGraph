@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import time
 import openai
 import json
 import re
@@ -510,7 +511,27 @@ This analysis used graph algorithms to comprehensively assess Anna Lee's money l
             question=question
         )
         return self.execute_prompt(full_prompt, parse_json=True)
- 
+
+
+def _mask_api_key_for_log(api_key: Optional[str]) -> str:
+    if not api_key:
+        return "(empty)"
+    if len(api_key) <= 8:
+        return "***"
+    return f"{api_key[:4]}...{api_key[-4:]}"
+
+
+def _proxy_env_lines() -> List[str]:
+    """用于排查 ConnectTimeout / TLS：是否走了 HTTP 代理。"""
+    lines = []
+    for key in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    ):
+        val = os.environ.get(key)
+        if val:
+            lines.append(f"{key}={val!r}")
+    return lines
 
 
 class OpenAIEnv:
@@ -526,6 +547,18 @@ class OpenAIEnv:
         openai.api_key = self.api_key
         openai.base_url = self.base_url
         self.client = openai
+
+        print(
+            f"[OpenAIEnv] init base_url={base_url!r} model={model_name!r} api_key={_mask_api_key_for_log(api_key)}",
+            flush=True,
+        )
+        px = _proxy_env_lines()
+        if px:
+            print("[OpenAIEnv] proxy env (requests may use HTTP CONNECT / TLS via proxy):", flush=True)
+            for line in px:
+                print(f"  {line}", flush=True)
+        else:
+            print("[OpenAIEnv] no HTTP(S)_PROXY / ALL_PROXY in environment", flush=True)
 
     def execute_prompt(self, full_prompt: str, parse_json: bool = True, response_format: Optional[Dict] = None) -> Any:
         """Execute a formatted prompt and return the response.
@@ -546,10 +579,32 @@ class OpenAIEnv:
         elif parse_json:
             # Use JSON mode for better JSON parsing
             request_kwargs["response_format"] = {"type": "json_object"}
-        
-        response = self.client.chat.completions.create(**request_kwargs)
+
+        t0 = time.perf_counter()
+        print(
+            f"[OpenAIEnv] execute_prompt start model={self.model!r} parse_json={parse_json} "
+            f"prompt_chars={len(full_prompt)}",
+            flush=True,
+        )
+        try:
+            response = self.client.chat.completions.create(**request_kwargs)
+        except Exception as e:
+            elapsed = time.perf_counter() - t0
+            print(
+                f"[OpenAIEnv] execute_prompt FAILED after {elapsed:.2f}s: {type(e).__name__}: {e}",
+                flush=True,
+            )
+            if getattr(e, "__cause__", None) is not None:
+                print(f"[OpenAIEnv]   cause: {type(e.__cause__).__name__}: {e.__cause__}", flush=True)
+            raise
+        elapsed = time.perf_counter() - t0
         response_text = response.choices[0].message.content
-        
+        out_len = len(response_text) if response_text else 0
+        print(
+            f"[OpenAIEnv] execute_prompt ok in {elapsed:.2f}s response_chars={out_len}",
+            flush=True,
+        )
+
         if parse_json:
             return parse_openai_json_response(response_text, "execute_prompt")
         return response_text
@@ -583,14 +638,41 @@ class OpenAIEnv:
         return False
 
     def generate_response(self, query: str):
+        t0 = time.perf_counter()
+        qchars = len(query) if query else 0
+        print(
+            f"[OpenAIEnv] generate_response start model={self.model!r} base_url={self.base_url!r} query_chars={qchars}",
+            flush=True,
+        )
         try:
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": query}],
             )
-            return resp.choices[0].message.content
+            text = resp.choices[0].message.content
+            elapsed = time.perf_counter() - t0
+            olen = len(text) if text else 0
+            print(
+                f"[OpenAIEnv] generate_response ok in {elapsed:.2f}s response_chars={olen}",
+                flush=True,
+            )
+            return text
         except Exception as e:
-            print(f"Error in OpenAI generate_response: {e}")
+            elapsed = time.perf_counter() - t0
+            ename = type(e).__name__
+            print(
+                f"[OpenAIEnv] generate_response FAILED after {elapsed:.2f}s: {ename}: {e}",
+                flush=True,
+            )
+            if getattr(e, "__cause__", None) is not None:
+                print(f"[OpenAIEnv]   cause: {type(e.__cause__).__name__}: {e.__cause__}", flush=True)
+            # 常见：代理 TLS 握手超时、连接超时、读超时
+            msg_l = str(e).lower()
+            if "timeout" in msg_l or "timed out" in msg_l or ename.endswith("Timeout"):
+                print(
+                    "[OpenAIEnv] hint: 若栈里有 http_proxy / start_tls，检查 HTTPS_PROXY 或尝试 unset 代理后重试",
+                    flush=True,
+                )
             return None
     
     
