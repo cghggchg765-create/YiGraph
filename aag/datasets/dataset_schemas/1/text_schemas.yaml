@@ -1,0 +1,11 @@
+datasets:
+- name: new_500.csv
+  description: new_500.csv（CSV 边表，待自动推断字段与建图）
+  type: csv_graph
+  graph_status: pending
+  parsing_rate: 0
+  create_time: '2026-04-12 14:03:23'
+  schema:
+    path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/1/text/new_500.csv
+    original_path: /home/zhangzh/aag_apitest/YiGraph/aag/datasets/data/1/text/new_500.csv
+    format: csv

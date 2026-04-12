@@ -1956,7 +1956,7 @@
                 <button class="mt-4 inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-blue-800">
                     <span id="manage_browse">Browse Files</span>
                 </button>
-                <input type="file" id="file-input" multiple accept=".txt,.docx,.pdf">
+                <input type="file" id="file-input" multiple accept=".txt,.docx,.pdf,.csv">
             </div>
             
             <!-- 已上传文件列表 - 移动到表单上方 -->
@@ -2710,8 +2710,8 @@ function showUploadModal(datasetType) {
                 // 图数据集只允许上传 .csv 文件
                 fileInput.setAttribute('accept', '.csv');
             } else {
-                // 文本数据集只允许上传 .txt、.docx、.pdf 文件
-                fileInput.setAttribute('accept', '.txt,.docx,.pdf');
+                // 文本数据集：文档 + CSV（CSV 走后端 csv_graph 分支，不经 MarkItDown）
+                fileInput.setAttribute('accept', '.txt,.docx,.pdf,.csv');
             }
         }
         

@@ -249,7 +249,11 @@ class DocumentAPIServer:
             return
 
         if dataset_schema["type"] == "text":
-            await self.upload_text_file(websocket, file_name, ds_name)
+            ext = os.path.splitext(file_name)[1].lower()
+            if ext == ".csv":
+                await self.upload_text_csv_graph_file(websocket, file_name, ds_name)
+            else:
+                await self.upload_text_file(websocket, file_name, ds_name)
         elif dataset_schema["type"] == "graph":
             await self.upload_graph_file(message, websocket, file_name, ds_name)
         else:
@@ -315,6 +319,72 @@ class DocumentAPIServer:
                 "type": "error",
                 "contentType": "text",
                 "content": f"上传失败 {str(error_msg)}"
+            }, ensure_ascii=False))
+
+    def _graph_schemas_yaml_path(self, ds_name: str) -> str:
+        return os.path.join(self.dataset_schema_dir, f"{ds_name}/graph_schemas.yaml")
+
+    def _remove_named_entry_from_graph_schemas_yaml(self, ds_name: str, entry_name: str) -> None:
+        graph_schema_file = self._graph_schemas_yaml_path(ds_name)
+        if not os.path.exists(graph_schema_file):
+            return
+        with open(graph_schema_file, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        datasets_list = data.get("datasets")
+        if not isinstance(datasets_list, list):
+            return
+        data["datasets"] = [d for d in datasets_list if d.get("name") != entry_name]
+        with open(graph_schema_file, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, sort_keys=False, allow_unicode=True)
+
+    async def upload_text_csv_graph_file(self, websocket, file_name, ds_name):
+        """
+        文本数据集中的 CSV：落在 text/ 目录，不写 Markdown；仅更新 text_schemas.yaml，
+        与 txt/pdf 等一致——graph_schemas.yaml 在解析完成后再建立（由后续解析流程写入）。
+        """
+        file_path = os.path.join(self.dataset_data_dir, f"{ds_name}/text/{file_name}")
+        error_msg = None
+        try:
+            if not os.path.isfile(file_path):
+                raise FileNotFoundError(f"未找到已上传文件: {file_path}")
+
+            new_schema = {
+                "name": file_name,
+                "description": f"{file_name}（CSV 边表，待自动推断字段与建图）",
+                "type": "csv_graph",
+                "graph_status": "pending",
+                "parsing_rate": 0,
+                "create_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "schema": {
+                    "path": file_path,
+                    "original_path": file_path,
+                    "format": "csv",
+                },
+            }
+
+            output_file = []
+            for key in self.each_dataset:
+                output_file.append(self.each_dataset[key])
+            output_file.append(new_schema)
+            final_schema = {"datasets": output_file}
+
+            with open(self.each_dataset_schema_file, "w", encoding="utf-8") as f:
+                yaml.dump(final_schema, f, sort_keys=False, allow_unicode=True)
+
+            await websocket.send(json.dumps({
+                "type": "data",
+                "contentType": "json",
+                "content": {
+                    "success": True,
+                    "data": {"file_name": file_name, "type": "csv_graph"},
+                },
+            }, ensure_ascii=False))
+        except Exception as e:
+            error_msg = str(e)
+            await websocket.send(json.dumps({
+                "type": "error",
+                "contentType": "text",
+                "content": f"上传失败 {error_msg}",
             }, ensure_ascii=False))
 
     async def upload_graph_file(self, message, websocket, file_name, ds_name):
@@ -645,13 +715,17 @@ class DocumentAPIServer:
                     with open(self.graph_schema_file, "w", encoding="utf-8") as f:
                         yaml.dump(all_data, f, sort_keys=False, allow_unicode=True)
             if self.datasets[ds_name]["type"] == "text":
+                text_entry_type = self.each_dataset[file_name].get("type")
                 schema = self.each_dataset[file_name].get("schema", {})
                 path = schema.get("path")
-                if path and os.path.exists(path):
-                    os.remove(path)
                 original_path = schema.get("original_path")
-                if original_path and os.path.exists(original_path):
-                    os.remove(original_path)
+                seen = set()
+                for p in (path, original_path):
+                    if not p or p in seen:
+                        continue
+                    seen.add(p)
+                    if os.path.exists(p):
+                        os.remove(p)
                 # 删除内存中的记录
                 del self.each_dataset[file_name]
                 # 更新 YAML 文件：先读全部，再去掉这个文本文件
@@ -664,6 +738,9 @@ class DocumentAPIServer:
 
                     with open(self.each_dataset_schema_file, "w", encoding="utf-8") as f:
                         yaml.dump(all_data, f, sort_keys=False, allow_unicode=True)
+                # 仅 CSV 图占位在 graph_schemas.yaml；普通 markdown/txt 等删除逻辑保持原样，不碰 graph_schemas
+                if text_entry_type == "csv_graph":
+                    self._remove_named_entry_from_graph_schemas_yaml(ds_name, file_name)
                         
             # 成功返回
             await websocket.send(json.dumps({
@@ -706,6 +783,13 @@ class DocumentAPIServer:
                 "type": "error",
                 "contentType": "text",
                 "content": f"file '{file_name}' don't exist."
+            }, ensure_ascii=False))
+            return
+        if self.each_dataset[file_name].get("type") == "csv_graph":
+            await websocket.send(json.dumps({
+                "type": "error",
+                "contentType": "text",
+                "content": "CSV 边表自动建图解析尚未实现，敬请期待。",
             }, ensure_ascii=False))
             return
         if self.each_dataset[file_name].get("graph_status", "") != "pending":
@@ -1043,6 +1127,12 @@ class DocumentAPIServer:
         try:
             overall_triplets = []
             for graph_name in self.graph_schema:
+                g = self.graph_schema[graph_name]
+                if g.get("graph_status") != "completed":
+                    continue
+                sch = g.get("schema") or {}
+                if not (sch.get("edge") or []):
+                    continue
                 triplets = self.read_graph_triplets(graph_name)
                 overall_triplets.extend(triplets)
 
