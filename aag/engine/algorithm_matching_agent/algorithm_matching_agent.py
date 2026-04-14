@@ -40,9 +40,7 @@ class AlgorithmMatchingAgent:
 
         self._node_matching_subgraph_app = self._compile_node_matching_subgraph()
 
-    # -----------------------------
     # Node Matching Sub-graph (Worker)
-    # -----------------------------
     def classify_intent(self, state: NodeMatchingState) -> Dict[str, Any]:
         """Classify question intent for one DAG node."""
 
@@ -262,9 +260,7 @@ class AlgorithmMatchingAgent:
 
         return workflow.compile()
 
-    # -----------------------------
     # Orchestrator (Map-Reduce)
-    # -----------------------------
     def _map_entry(self, state: MatchingOrchestratorState) -> Dict[str, Any]:
         """Entry node for the map phase; keeps state unchanged."""
 
