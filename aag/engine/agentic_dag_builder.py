@@ -35,7 +35,7 @@ class DAGBuilderState(TypedDict):
     dataset_info: str
     rewritten_query: str
     subquery_plan_json: Dict[str, Any]
-    generated_dag: Optional[GraphWorkflowDAG]
+    dag_payload: Dict[str, Any]
     validation_errors: str
     retry_count: int
 
@@ -209,7 +209,7 @@ def init_dag_builder_state(
         "dataset_info": dataset_info,
         "rewritten_query": "",
         "subquery_plan_json": {},
-        "generated_dag": None,
+        "dag_payload": {},
         "validation_errors": "",
         "retry_count": 0,
     }
@@ -281,7 +281,7 @@ def validate_and_build_node(state: DAGBuilderState) -> Dict[str, Any]:
         state: Current DAG builder state.
 
     Returns:
-        Success: generated_dag and empty validation_errors.
+        Success: dag_payload and empty validation_errors.
         Failure: validation_errors and incremented retry_count.
     """
 
@@ -289,7 +289,10 @@ def validate_and_build_node(state: DAGBuilderState) -> Dict[str, Any]:
 
     try:
         dag.build_from_subquery_plan(state["subquery_plan_json"])
-        return {"generated_dag": dag, "validation_errors": ""}
+        dag_payload = dag.get_dag_info()
+        if not isinstance(dag_payload, dict):
+            raise ValueError("dag.get_dag_info() must return a dict")
+        return {"dag_payload": dag_payload, "validation_errors": ""}
     except Exception as exc:
         return {
             "validation_errors": str(exc),
@@ -371,6 +374,10 @@ def run_agentic_dag_builder(
 ) -> GraphWorkflowDAG:
     """Run DAG builder pipeline and return generated GraphWorkflowDAG.
 
+    The internal LangGraph state remains JSON-serializable and only passes
+    `dag_payload` between nodes. The final DAG object is reconstructed from
+    payload for backward compatibility with existing scheduler code.
+
     Args:
         question: User input question.
         available_tools: Tool library metadata list or pre-serialized string.
@@ -400,14 +407,18 @@ def run_agentic_dag_builder(
     )
     final_state = dag_builder_app.invoke(initial_state)
 
-    generated_dag = final_state.get("generated_dag")
-    if generated_dag is None:
+    dag_payload = final_state.get("dag_payload")
+    if not isinstance(dag_payload, dict) or not dag_payload:
         raise ValueError(
-            "DAG generation failed: generated_dag is empty; "
+            "DAG generation failed: dag_payload is empty; "
             f"validation_errors={final_state.get('validation_errors', '')}"
         )
 
-    if not isinstance(generated_dag, GraphWorkflowDAG):
-        raise ValueError("DAG generation failed: generated_dag is not GraphWorkflowDAG")
+    subquery_plan = dag_payload.get("subquery_plan")
+    if not isinstance(subquery_plan, dict):
+        raise ValueError("DAG generation failed: dag_payload.subquery_plan is invalid")
+
+    generated_dag = GraphWorkflowDAG()
+    generated_dag.build_from_subquery_plan(subquery_plan)
 
     return generated_dag
