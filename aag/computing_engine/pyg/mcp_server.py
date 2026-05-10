@@ -2,13 +2,12 @@
 
 import csv
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from functools import wraps
 
 from mcp.server.fastmcp import FastMCP
 
 from aag.computing_engine.networkx_server.graph_computation_processor import GraphComputationProcessor
-from aag.computing_engine.pyg.dynamic_tool_registry import register_pyg_tools
 from aag.computing_engine.pyg.algorithm_tool_registry import register_pyg_algorithm_tools
 from aag.expert_search_engine.database.datatype import VertexData, EdgeData
 
@@ -41,14 +40,15 @@ def apply_processing(func):
 def run_initialize_graph(
     vertices: List[Dict[str, Any]],
     edges: List[Dict[str, Any]],
-    dataset_config: Dict[str, Any],
+    dataset_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     初始化图数据结构，加载顶点和边数据。
     必须首先调用此工具，才能运行任何 PyG 卷积。
+    dataset_config 可选，缺省时默认构建无向单图。
     """
     try:
-        graph_structure = dataset_config.get("schema", {}).get("graph_structure", {})
+        graph_structure = (dataset_config or {}).get("schema", {}).get("graph_structure", {})
         directed = graph_structure.get("directed", False)
         multiedge = graph_structure.get("multigraph", False)
 
@@ -123,13 +123,6 @@ def run_get_graph_info() -> Dict[str, Any]:
         logger.error(f"❌ 图信息查询失败: {e}", exc_info=True)
         return {"algorithm": "get_graph_info", "success": False, "error": str(e), "summary": "图信息查询失败"}
 
-
-# 批量注册所有 PyG GNN 卷积工具（算子级）
-register_pyg_tools(
-    mcp=mcp,
-    processor_getter=get_processor,
-    post_processing_decorator=apply_processing,
-)
 
 # 批量注册算法级工具（backbone × task 组合）
 register_pyg_algorithm_tools(

@@ -320,53 +320,17 @@ engine_supported_algorithms:
       - tool: find_cycle
 
   pyg:
-    gcnconv:
-      - tool: pyg_gcnconv
-    sageconv:
-      - tool: pyg_sageconv
-    gatconv:
-      - tool: pyg_gatconv
-    gatv2conv:
-      - tool: pyg_gatv2conv
-    transformerconv:
-      - tool: pyg_transformerconv
-    resgatedgraphconv:
-      - tool: pyg_resgatedgraphconv
-    gravnetconv:
-      - tool: pyg_gravnetconv
-    supergatconv:
-      - tool: pyg_supergatconv
-    egconv:
-      - tool: pyg_egconv
-    pdnconv:
-      - tool: pyg_pdnconv
-    generalconv:
-      - tool: pyg_generalconv
-    hypergraphconv:
-      - tool: pyg_hypergraphconv
-    leconv:
-      - tool: pyg_leconv
-    clustergcnconv:
-      - tool: pyg_clustergcnconv
-    genconv:
-      - tool: pyg_genconv
-    filmconv:
-      - tool: pyg_filmconv
-    mfconv:
-      - tool: pyg_mfconv
-    feastconv:
-      - tool: pyg_feastconv
-    pointtransformerconv:
-      - tool: pyg_pointtransformerconv
-    heteroconv:
-      - tool: pyg_heteroconv
-    mixhopconv:
-      - tool: pyg_mixhopconv
-    ssgconv:
-      - tool: pyg_ssgconv
-    armaconv:
-      - tool: pyg_armaconv
-    sgconv:
-      - tool: pyg_sgconv
-    tagconv:
-      - tool: pyg_tagconv
+    initialize_graph_pyg:
+      - tool: initialize_graph
+    gcn_node_classification:
+      - tool: gcn_node_classification
+    gat_node_classification:
+      - tool: gat_node_classification
+    graphsage_node_classification:
+      - tool: graphsage_node_classification
+    gcn_link_prediction:
+      - tool: gcn_link_prediction
+    gat_link_prediction:
+      - tool: gat_link_prediction
+    graphsage_link_prediction:
+      - tool: graphsage_link_prediction

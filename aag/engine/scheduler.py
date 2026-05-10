@@ -121,12 +121,15 @@ class Scheduler:
             if not isinstance(algo_data, dict):
                 continue
 
+            description = algo_data.get("Application_scenario", "") or algo_data.get("description", "")
+            if isinstance(description, str) and len(description) > 200:
+                description = description[:200] + "..."
             available_tools.append(
                 {
                     "id": str(algo_id),
                     "name": str(algo_id),
                     "task_type": algo_data.get("task_type", ""),
-                    "description": algo_data.get("description", ""),
+                    "description": description,
                     "input_schema": algo_data.get("parameters", {}),
                     "output_schema": algo_data.get("output_schema", {}),
                 }
@@ -845,13 +848,13 @@ class Scheduler:
             task_type = task_data.get("task_type", "Unknown")
             description = task_data.get("description", "")
             algorithms = task_data.get("algorithm", [])
-            
+
             # Get algorithm names
             algo_names = []
             for algo_id in algorithms[:5]:  # Limit to first 5 for brevity
                 if algo_id in algo_index:
                     algo_names.append(algo_id)
-            
+
             if algorithms:
                 algo_list = ", ".join(algo_names)
                 if len(algorithms) > 5:
@@ -859,7 +862,7 @@ class Scheduler:
                 library_info.append(
                     f"- **{task_type}**: {description}\n  Algorithms: {algo_list}"
                 )
-        
+
         return "\n".join(library_info)
     
     def _get_graph_schema_summary(self) -> Optional[str]:
@@ -1278,9 +1281,16 @@ class Scheduler:
                     if extraction_result is None:
                         raise ValueError("Parameter adaptation and post-processing code generation failed, returning an empty result.")
 
-                    post_processing_info = extraction_result.get("post_processing_code") or {} 
+                    post_processing_info = extraction_result.get("post_processing_code") or {}
                     is_has_extract_code = bool(post_processing_info.get("is_calculate"))
                     output_schema = post_processing_info.get("output_schema") or {}
+
+                    # PyG GNN 工具自带完整输出，跳过 LLM 后处理避免数据丢失
+                    _pyg_backbones = ("gcn", "gat", "graphsage")
+                    if any(step.graph_algorithm.startswith(b) for b in _pyg_backbones):
+                        is_has_extract_code = False
+                        output_schema = {}
+                        post_processing_info = {}
 
                     tool_result = await self.computing_engine.run_algorithm(
                         step.graph_algorithm,
@@ -1301,7 +1311,10 @@ class Scheduler:
 
                     if not tool_result.get("success", False):
                         error_msg = tool_result.get("error") or "Algorithm execution failed"
-                        logger.info(f"tool_result:{error_msg}")
+                        summary = tool_result.get("summary", "")
+                        if summary and summary not in error_msg:
+                            error_msg = f"{error_msg}. Hint: {summary}"
+                        logger.info(f"tool_result error: {error_msg}")
                         raise RuntimeError(error_msg)
 
                     return is_has_extract_code, output_schema, tool_result
@@ -1318,12 +1331,32 @@ class Scheduler:
                     logger.error(f"❌ Step {step_id} algorithm execution failed: {e}, skipping")
                     continue
 
-                step.add_algorithm_result(
-                    tool_name=tool_metadata.get("name", ""),
-                    tool_result_data=tool_result.get("result", {}),
-                    output_schema=output_schema,
-                    is_has_extract_code=is_has_extract_code
-                )
+                _pyg_backbones = ("gcn", "gat", "graphsage")
+                if any(step.graph_algorithm.startswith(b) for b in _pyg_backbones):
+                    # PyG GNN 工具直接存完整结果，供后续依赖步骤读取
+                    step.add_output(
+                        task_type=GraphAnalysisSubType.GRAPH_ALGORITHM,
+                        source=tool_metadata.get("name", ""),
+                        output_schema=OutputSchema(
+                            description="GNN algorithm output",
+                            type="dict",
+                            fields={
+                                "original_result": OutputField(
+                                    type="dict",
+                                    field_description="Complete GNN output including predictions and scores"
+                                )
+                            }
+                        ),
+                        value={"original_result": tool_result.get("result", {})},
+                        validate_schema=False
+                    )
+                else:
+                    step.add_algorithm_result(
+                        tool_name=tool_metadata.get("name", ""),
+                        tool_result_data=tool_result.get("result", {}),
+                        output_schema=output_schema,
+                        is_has_extract_code=is_has_extract_code
+                    )
                 logger.info(f"✅ Tool execution: {tool_result.get('summary','done')}")
 
                 self.dag.set_success(step_id)
@@ -1581,6 +1614,12 @@ class Scheduler:
         result = await self.computing_engine.run_algorithm("initialize_graph", payload)
         if not result.get("success", False):
             raise RuntimeError(result.get("error", "Failed to initialize graph data"))
+
+        # Also initialize PyG engine if connected, so GNN algorithms can run
+        if "pyg" in self.computing_engine.clients:
+            pyg_result = await self.computing_engine.run_algorithm("initialize_graph_pyg", payload)
+            if not pyg_result.get("success", False):
+                logger.warning(f"⚠️ PyG engine graph init failed: {pyg_result.get('error')}")
 
         logger.info(
             "🗺️ Working graph initialized | use_subgraph: %s | vertices: %s | edges: %s",

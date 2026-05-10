@@ -163,3 +163,18 @@
     - common_neighbors
     - extract_subgraph
     - get_paths_between_two_nodes
+- id: NodeClassification
+  task_type: "Node Classification"
+  description: Use GNN to learn node representations and classify each node based on graph structure and node attributes. Suitable for tasks like detecting suspicious accounts, labeling users, or categorizing entities in a graph.
+  algorithm:
+    - gcn_node_classification
+    - gat_node_classification
+    - graphsage_node_classification
+
+- id: LinkPrediction
+  task_type: "Link Prediction"
+  description: Use GNN to predict the likelihood of edges between node pairs. Suitable for tasks like predicting future connections, recommending relationships, or identifying missing links in a graph.
+  algorithm:
+    - gcn_link_prediction
+    - gat_link_prediction
+    - graphsage_link_prediction
