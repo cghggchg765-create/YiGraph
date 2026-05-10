@@ -5,7 +5,6 @@ import logging
 import json
 import difflib
 import re
-import os
 from argparse import OPTIONAL
 from dataclasses import asdict
 from typing import Any, Dict, Optional, Callable, List, Tuple, Union, Set
@@ -25,13 +24,9 @@ from aag.expert_search_engine.database.datatype import VertexData, EdgeData, Gra
 from aag.utils.graph_conversion import flatten_graph, reconstruct_graph
 from aag.utils.data_utils import take_sample
 from aag.rag_engine.vector_rag import VectorRAG
+from aag.rag_engine.graph_rag import GraphRAG
 from aag.reasoner.prompt_template.llm_prompt_en import rag_prompt
 from aag.error_recovery.error_manager import ErrorRecovery
-from aag.engine.agentic_dag_builder import (
-    build_langchain_llm_from_reasoner_config,
-    run_agentic_dag_builder,
-    set_dag_builder_llm,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +42,9 @@ class Scheduler:
         self.computing_engine: Optional[ComputingEngine] = None
         self.expert_search_engine: Optional[ExpertSearchEngine] = None
         self.dag: Optional[GraphWorkflowDAG] = None
+        self.rag_engine: Optional[VectorRAG] = None
+        self.graph_rag_engine: Optional[GraphRAG] = None
+        
         self.dataset_manager: Optional[DatasetManager] = None
         self.data_dependency_resolver: Optional[DataDependencyResolver] = None
         self.error_recovery: Optional[ErrorRecovery] = None
@@ -56,7 +54,6 @@ class Scheduler:
         self.current_graph_dataset: Optional[DatasetConfig] = None  # Current graph dataset config (may be converted graph)
         self.global_graph: Optional[GraphData] = None
         self.query_id_mapping: Dict[str, int] = {}
-        self.use_agentic_dag_builder: bool = os.environ.get("AAG_USE_LANGGRAPH_DAG_BUILDER", "1") == "1"
 
         self._initialize_components()
 
@@ -80,7 +77,9 @@ class Scheduler:
         self._init_router()
 
         self._init_rag_engine()
-        
+
+        self._init_graph_rag_engine()
+
         self._init_error_recovery()
 
         self._init_data_dependency_resolver()
@@ -90,52 +89,9 @@ class Scheduler:
         try:
             self.reasoner = Reasoner(self.config.reasoner)
             print("✓ Reasoner initialized")
-
-            if self.use_agentic_dag_builder:
-                try:
-                    dag_builder_llm = build_langchain_llm_from_reasoner_config(self.config.reasoner)
-                    set_dag_builder_llm(dag_builder_llm)
-                    logger.info("✓ Agentic DAG Builder LLM initialized")
-                except Exception as dag_init_err:
-                    self.use_agentic_dag_builder = False
-                    logger.warning(
-                        "Agentic DAG Builder disabled due to LLM init failure: %s",
-                        dag_init_err,
-                    )
         except Exception as e:
             print(f"✗ Reasoner initialization failed: {e}")
             raise
-
-    def _build_available_tools_for_dag_builder(self) -> List[Dict[str, Any]]:
-        """Build available tool list for agentic DAG builder prompts.
-
-        Returns:
-            A list of lightweight tool metadata dictionaries.
-        """
-
-        if not self.expert_search_engine or not self.expert_search_engine.algo_index:
-            return []
-
-        available_tools: List[Dict[str, Any]] = []
-        for algo_id, algo_data in self.expert_search_engine.algo_index.items():
-            if not isinstance(algo_data, dict):
-                continue
-
-            description = algo_data.get("Application_scenario", "") or algo_data.get("description", "")
-            if isinstance(description, str) and len(description) > 200:
-                description = description[:200] + "..."
-            available_tools.append(
-                {
-                    "id": str(algo_id),
-                    "name": str(algo_id),
-                    "task_type": algo_data.get("task_type", ""),
-                    "description": description,
-                    "input_schema": algo_data.get("parameters", {}),
-                    "output_schema": algo_data.get("output_schema", {}),
-                }
-            )
-
-        return available_tools
     
     def _init_computing_engine(self):
         """Initialize computing engine."""
@@ -196,6 +152,20 @@ class Scheduler:
             print(f"✓ RAGEngine initialized")
         except Exception as e:
             print(f"✗ RAGEngineinitialization failed: {e}")
+            raise
+
+    def _init_graph_rag_engine(self):
+        try:
+            self.graph_rag_engine = GraphRAG(
+                self.config.retrieval,
+                llm_env_=self.reasoner,
+                pruning=30,
+                data_type="qa",
+                pruning_mode="embedding_for_perentity",
+            )
+            print("✓ GraphRAG initialized")
+        except Exception as e:
+            print(f"✗ GraphRAG initialization failed: {e}")
             raise
 
     def _init_error_recovery(self):
@@ -302,11 +272,12 @@ class Scheduler:
             return "⚠️ No dataset selected; please set the analysis target first."
         
         original_type = self.dataset_manager.get_dataset_original_type(self.current_dataset_name)
-        
+
         if decision.query_type == QueryType.RAG:
             if original_type == "graph":
-                return "❌ Error: Current dataset is graph data; retrieval is not supported. Use graph analysis only."
-            return await self._execute_rag(query)
+                return await self._execute_graph_rag(query)
+            else:
+                return await self._execute_rag(query)
 
         elif decision.query_type == QueryType.GRAPH_QUERY:
             if original_type != "graph":
@@ -700,6 +671,23 @@ class Scheduler:
         print("✅ DAG build and algorithm selection done; starting computation")
         return await self._run_algorithm_pipeline2()
 
+    async def _execute_graph_rag(self, query: str) -> str:
+        """Execute GraphRAG retrieval + generation pipeline."""
+        if not self.current_dataset:
+            return "⚠️ No analysis data selected; please set the analysis target first."
+        if self.graph_rag_engine is None:
+            return "❌ GraphRAG is not initialized."
+        try:
+            nodes, retrieve_info = self.graph_rag_engine.retrieve(query)
+            logger.info(f"GraphRAG retrieve info: {retrieve_info}")
+            if not nodes:
+                return "❌ GraphRAG retrieval returned empty context."
+            response = self.graph_rag_engine.generation(query, nodes)
+            return str(response)
+        except Exception as e:
+            logger.error(f"GraphRAG execution failed: {e}", exc_info=True)
+            return f"❌ GraphRAG execution failed: {str(e)}"
+            
     async def _execute_rag(self, query: str) -> str:
         """
         Execute RAG query
@@ -848,13 +836,13 @@ class Scheduler:
             task_type = task_data.get("task_type", "Unknown")
             description = task_data.get("description", "")
             algorithms = task_data.get("algorithm", [])
-
+            
             # Get algorithm names
             algo_names = []
             for algo_id in algorithms[:5]:  # Limit to first 5 for brevity
                 if algo_id in algo_index:
                     algo_names.append(algo_id)
-
+            
             if algorithms:
                 algo_list = ", ".join(algo_names)
                 if len(algorithms) > 5:
@@ -862,7 +850,7 @@ class Scheduler:
                 library_info.append(
                     f"- **{task_type}**: {description}\n  Algorithms: {algo_list}"
                 )
-
+        
         return "\n".join(library_info)
     
     def _get_graph_schema_summary(self) -> Optional[str]:
@@ -919,23 +907,6 @@ class Scheduler:
         Returns:
             Built DAG.
         """
-        if self.use_agentic_dag_builder:
-            try:
-                available_tools = self._build_available_tools_for_dag_builder()
-                generated_dag = run_agentic_dag_builder(
-                    question=query,
-                    available_tools=available_tools,
-                )
-                self.dag = generated_dag
-                self.query_id_mapping = {}
-                logger.info("✅ DAG generated by LangGraph DAG Builder")
-                return self.dag
-            except Exception as agentic_err:
-                logger.warning(
-                    "Agentic DAG Builder failed, fallback to legacy path: %s",
-                    agentic_err,
-                )
-
         # Step 1: Get algorithm library information
         algorithm_library_info = self._get_algorithm_library_info()
         logger.info("📚 Algorithm library information extracted")
@@ -1281,16 +1252,9 @@ class Scheduler:
                     if extraction_result is None:
                         raise ValueError("Parameter adaptation and post-processing code generation failed, returning an empty result.")
 
-                    post_processing_info = extraction_result.get("post_processing_code") or {}
+                    post_processing_info = extraction_result.get("post_processing_code") or {} 
                     is_has_extract_code = bool(post_processing_info.get("is_calculate"))
                     output_schema = post_processing_info.get("output_schema") or {}
-
-                    # PyG GNN 工具自带完整输出，跳过 LLM 后处理避免数据丢失
-                    _pyg_backbones = ("gcn", "gat", "graphsage")
-                    if any(step.graph_algorithm.startswith(b) for b in _pyg_backbones):
-                        is_has_extract_code = False
-                        output_schema = {}
-                        post_processing_info = {}
 
                     tool_result = await self.computing_engine.run_algorithm(
                         step.graph_algorithm,
@@ -1311,10 +1275,7 @@ class Scheduler:
 
                     if not tool_result.get("success", False):
                         error_msg = tool_result.get("error") or "Algorithm execution failed"
-                        summary = tool_result.get("summary", "")
-                        if summary and summary not in error_msg:
-                            error_msg = f"{error_msg}. Hint: {summary}"
-                        logger.info(f"tool_result error: {error_msg}")
+                        logger.info(f"tool_result:{error_msg}")
                         raise RuntimeError(error_msg)
 
                     return is_has_extract_code, output_schema, tool_result
@@ -1331,32 +1292,12 @@ class Scheduler:
                     logger.error(f"❌ Step {step_id} algorithm execution failed: {e}, skipping")
                     continue
 
-                _pyg_backbones = ("gcn", "gat", "graphsage")
-                if any(step.graph_algorithm.startswith(b) for b in _pyg_backbones):
-                    # PyG GNN 工具直接存完整结果，供后续依赖步骤读取
-                    step.add_output(
-                        task_type=GraphAnalysisSubType.GRAPH_ALGORITHM,
-                        source=tool_metadata.get("name", ""),
-                        output_schema=OutputSchema(
-                            description="GNN algorithm output",
-                            type="dict",
-                            fields={
-                                "original_result": OutputField(
-                                    type="dict",
-                                    field_description="Complete GNN output including predictions and scores"
-                                )
-                            }
-                        ),
-                        value={"original_result": tool_result.get("result", {})},
-                        validate_schema=False
-                    )
-                else:
-                    step.add_algorithm_result(
-                        tool_name=tool_metadata.get("name", ""),
-                        tool_result_data=tool_result.get("result", {}),
-                        output_schema=output_schema,
-                        is_has_extract_code=is_has_extract_code
-                    )
+                step.add_algorithm_result(
+                    tool_name=tool_metadata.get("name", ""),
+                    tool_result_data=tool_result.get("result", {}),
+                    output_schema=output_schema,
+                    is_has_extract_code=is_has_extract_code
+                )
                 logger.info(f"✅ Tool execution: {tool_result.get('summary','done')}")
 
                 self.dag.set_success(step_id)
@@ -1614,12 +1555,6 @@ class Scheduler:
         result = await self.computing_engine.run_algorithm("initialize_graph", payload)
         if not result.get("success", False):
             raise RuntimeError(result.get("error", "Failed to initialize graph data"))
-
-        # Also initialize PyG engine if connected, so GNN algorithms can run
-        if "pyg" in self.computing_engine.clients:
-            pyg_result = await self.computing_engine.run_algorithm("initialize_graph_pyg", payload)
-            if not pyg_result.get("success", False):
-                logger.warning(f"⚠️ PyG engine graph init failed: {pyg_result.get('error')}")
 
         logger.info(
             "🗺️ Working graph initialized | use_subgraph: %s | vertices: %s | edges: %s",
