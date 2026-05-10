@@ -20,6 +20,7 @@ import yaml
 import datetime
 import logging
 from time import sleep
+import time
 logger = logging.getLogger(__name__)
 from aag.utils.path_utils import DATASETS_DIR, DATASETS_DATA_DIR, DATASETS_SCHEMA_DIR, DATASETS_INDEX_PATH
 from aag.data_pipeline.data_transformer.text_2_graph.text_2_graph import Text2Graph
@@ -824,9 +825,13 @@ class DocumentAPIServer:
             await websocket.send(json.dumps({"type": "status", "message": "Extracting triplets and entities..."}))
 
             if mode == "single":
-                triplets, entity2id, entity2type = text_2_graph.extract_graph_and_entity_by_LLM(self.each_dataset, file_name, self.each_dataset_schema_file)
+                triplets, entity2id, entity2type, parse_metrics = text_2_graph.extract_graph_and_entity_by_LLM(
+                    self.each_dataset, file_name, self.each_dataset_schema_file
+                )
             elif mode == "multiple":
-                triplets, entity2id, entity2type = text_2_graph.extract_graph_and_entity_by_LLM_with_mutiple(self.each_dataset, file_name, self.each_dataset_schema_file)
+                triplets, entity2id, entity2type, parse_metrics = text_2_graph.extract_graph_and_entity_by_LLM_with_mutiple(
+                    self.each_dataset, file_name, self.each_dataset_schema_file
+                )
             else:
                 raise ValueError(f"Invalid mode: {mode}")
 
@@ -840,6 +845,79 @@ class DocumentAPIServer:
 
             new_schema = text_2_graph.save_graph_with_entity(
                 triplets, entity2id, entity2type, graph_schema_file
+            )
+
+            metrics_log = {
+                "event": "TEXT_DATASET_PARSE_METRICS",
+                "dataset": ds_name,
+                "file": file_name,
+                "mode": mode,
+                "provider": parse_metrics.get("provider", type),
+                "model": parse_metrics.get("model", llm_name),
+                "elapsed_ms": {
+                    "value": parse_metrics.get("elapsed_ms"),
+                    "desc": "从开始文本抽取到图文件/Schema 生成完成的总耗时(毫秒)",
+                },
+                "llm_elapsed_ms": {
+                    "value": parse_metrics.get("llm_elapsed_ms"),
+                    "desc": "仅 LLM 调用累计耗时(毫秒)",
+                },
+                "chunk_count": {
+                    "value": parse_metrics.get("chunk_count"),
+                    "desc": "文本分块总数",
+                },
+                "llm_call_count": {
+                    "value": parse_metrics.get("llm_call_count"),
+                    "desc": "LLM 总调用次数（含实体类型补全）",
+                },
+                "retry_count": {
+                    "value": parse_metrics.get("retry_count"),
+                    "desc": "LLM 重试次数",
+                },
+                "prompt_tokens": {
+                    "value": parse_metrics.get("prompt_tokens"),
+                    "desc": "输入 token 数（OpenAI usage，可空）",
+                },
+                "completion_tokens": {
+                    "value": parse_metrics.get("completion_tokens"),
+                    "desc": "输出 token 数（OpenAI usage，可空）",
+                },
+                "total_tokens": {
+                    "value": parse_metrics.get("total_tokens"),
+                    "desc": "总 token 数（OpenAI usage，可空）",
+                },
+                "text_bytes": {
+                    "value": parse_metrics.get("text_bytes"),
+                    "desc": "原始输入文档大小（字节）",
+                },
+                "text_chars": {
+                    "value": parse_metrics.get("text_chars"),
+                    "desc": "参与分块解析文本总字符数",
+                },
+                "markdown_text_bytes": {
+                    "value": parse_metrics.get("markdown_text_bytes"),
+                    "desc": "MarkItDown 转换后文本 UTF-8 大小（字节）",
+                },
+                "markdown_text_chars": {
+                    "value": parse_metrics.get("markdown_text_chars"),
+                    "desc": "MarkItDown 转换后文本字符数",
+                },
+                "markdown_file_size_bytes": {
+                    "value": parse_metrics.get("markdown_file_size_bytes"),
+                    "desc": "落盘 Markdown 文件大小（字节）",
+                },
+                "triplet_count": {
+                    "value": len(triplets),
+                    "desc": "最终生成三元组数量",
+                },
+                "vertex_count": {
+                    "value": len(entity2id),
+                    "desc": "最终生成实体数量",
+                },
+            }
+            logger.info(
+                "\n================ 文本数据集解析指标 ================\n%s\n=====================================================",
+                json.dumps(metrics_log, ensure_ascii=False, indent=2),
             )
 
             self.each_dataset[file_name]["graph_status"] = "completed"
@@ -891,6 +969,7 @@ class DocumentAPIServer:
                 yaml.dump({"datasets": out}, f, sort_keys=False, allow_unicode=True)
 
         try:
+            t_total = time.perf_counter()
             self.each_dataset[file_name]["graph_status"] = "parsing"
             _persist_text_schema()
 
@@ -901,13 +980,24 @@ class DocumentAPIServer:
             if len(columns) < 2:
                 raise ValueError("CSV 至少需要 2 列")
 
+            fallback_used = False
+            llm_metrics = {
+                "provider": llm_type,
+                "model": llm_name,
+                "llm_elapsed_ms": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "retry_count": None,
+            }
             try:
-                raw_infer = csv_graph_llm.infer_csv_schema_with_llm(
+                raw_infer, llm_metrics = csv_graph_llm.infer_csv_schema_with_llm(
                     columns, rows, llm_type, llm_name, api_key, base_url
                 )
                 infer = csv_graph_llm._validate_infer(columns, raw_infer)
             except Exception as ex:
                 logger.warning("CSV LLM 列推断失败，使用启发式: %s", ex)
+                fallback_used = True
                 infer = csv_graph_llm._validate_infer(columns, csv_graph_llm._heuristic_schema(columns))
 
             await websocket.send(json.dumps({"type": "status", "message": "正在生成顶点/边表并写入 graph_schemas..."}))
@@ -933,6 +1023,29 @@ class DocumentAPIServer:
             _persist_text_schema()
 
             n_edges = schema_dict["schema"]["graph_store_info"].get("edge_count", 0)
+            n_vertices = schema_dict["schema"]["graph_store_info"].get("vertex_count", 0)
+            elapsed_ms = int((time.perf_counter() - t_total) * 1000)
+            metrics_log = {
+                "event": "CSV_TEXT_DATASET_PARSE_METRICS",
+                "dataset": ds_name,
+                "file": file_name,
+                "elapsed_ms": {"value": elapsed_ms, "desc": "从进入 CSV 解析分支到完成写入 schema 的总耗时(毫秒)"},
+                "llm_elapsed_ms": {"value": llm_metrics.get("llm_elapsed_ms"), "desc": "仅 LLM 字段推断请求耗时(毫秒)"},
+                "row_count": {"value": len(rows), "desc": "读取到的 CSV 行数（不含表头）"},
+                "edge_count": {"value": n_edges, "desc": "最终生成的边数量"},
+                "vertex_count": {"value": n_vertices, "desc": "最终生成的顶点数量"},
+                "prompt_tokens": {"value": llm_metrics.get("prompt_tokens"), "desc": "提示词 token 数（OpenAI usage，可空）"},
+                "completion_tokens": {"value": llm_metrics.get("completion_tokens"), "desc": "模型输出 token 数（OpenAI usage，可空）"},
+                "total_tokens": {"value": llm_metrics.get("total_tokens"), "desc": "总 token 数（OpenAI usage，可空）"},
+                "model": {"value": llm_metrics.get("model", llm_name), "desc": "模型名称"},
+                "provider": {"value": llm_metrics.get("provider", llm_type), "desc": "模型提供方"},
+                "fallback_used": {"value": fallback_used, "desc": "是否触发了启发式回退（true=LLM推断失败后回退）"},
+            }
+            logger.info(
+                "\n================ CSV 文本数据集解析指标 ================\n%s\n=======================================================",
+                json.dumps(metrics_log, ensure_ascii=False, indent=2),
+            )
+
             response_data = {
                 "type": "data",
                 "contentType": "json",
@@ -1549,14 +1662,14 @@ async def main():
             self.message = json.dumps({"action": "parsing_file", 
                             "file_name": "debug_document1.md",
                             "ds_name": "Debug0320",
-                            "type": "openai",
-                            "api_key": "sk-15039969922b4f4c87f02ebea43244d7",
-                            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/",
+                            "type": "ollama",
+                            "api_key": "YOUR_API_KEY",
+                            "base_url": "YOUR_BASE_URL",
              
-                            "llm_name": "qwen-plus",
+                            "llm_name": "LLAMA3.1:70B",
                             "mode":"single",
                             "thread_count": 1,
-                            "chunk_size": 512
+                            "chunk_size": 3072
                             })
              #self.message = json.dumps({"action": "parsing_file", 
                                 #"file_name": "debug_document1.md",

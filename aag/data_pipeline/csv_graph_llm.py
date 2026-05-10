@@ -9,6 +9,7 @@ import datetime
 import io
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from aag.utils.parse_json import extract_json_from_response
@@ -110,7 +111,7 @@ def infer_csv_schema_with_llm(
     api_key: str,
     base_url: Optional[str],
     max_retries: int = 4,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     llm = _make_llm(llm_type, llm_name, api_key, base_url)
     sample = sample_rows[:12]
     prompt = CSV_INFER_PROMPT.format(
@@ -119,8 +120,20 @@ def infer_csv_schema_with_llm(
     )
     last_err = None
     for attempt in range(1, max_retries + 1):
-        raw = llm.generate_response(query=prompt)
-        text = _llm_text(raw)
+        t0 = time.perf_counter()
+        usage_obj = None
+        if llm_type == "openai" and hasattr(llm, "client"):
+            resp = llm.client.chat.completions.create(
+                model=llm.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            usage_obj = getattr(resp, "usage", None)
+            text = (resp.choices[0].message.content or "") if getattr(resp, "choices", None) else ""
+        else:
+            raw = llm.generate_response(query=prompt)
+            text = _llm_text(raw)
+        llm_elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
         if not text:
             last_err = "模型无返回"
             continue
@@ -132,7 +145,17 @@ def infer_csv_schema_with_llm(
         if not isinstance(data, dict):
             last_err = "JSON 不是对象"
             continue
-        return data
+
+        metrics = {
+            "provider": llm_type,
+            "model": llm_name,
+            "llm_elapsed_ms": llm_elapsed_ms,
+            "prompt_tokens": getattr(usage_obj, "prompt_tokens", None) if usage_obj is not None else None,
+            "completion_tokens": getattr(usage_obj, "completion_tokens", None) if usage_obj is not None else None,
+            "total_tokens": getattr(usage_obj, "total_tokens", None) if usage_obj is not None else None,
+            "retry_count": attempt - 1,
+        }
+        return data, metrics
     raise RuntimeError(f"CSV 列推断失败（已重试 {max_retries} 次）: {last_err}")
 
 

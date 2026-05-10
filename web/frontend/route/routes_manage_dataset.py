@@ -1047,13 +1047,13 @@ def api_parse_control():
                 "action": "parsing_file",
                 "file_name": file_name,
                 "ds_name": kb_name,
-                "type": "openai",
-                "api_key": "sk-15039969922b4f4c87f02ebea43244d7",
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/",
-                "llm_name": "qwen-plus",
+                "type": "ollama",
+                "api_key": "YOUR_API_KEY",
+                "base_url": "YOUR_BASE_URL",
+                "llm_name": "llama3.1:70b",
                 "mode":"single",
                 "thread_count": 1,
-                "chunk_size": 5120
+                "chunk_size": 3072
             }
         ))
         asyncio.run(server_Test.handler(socketserver))
