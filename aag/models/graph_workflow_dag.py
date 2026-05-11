@@ -395,7 +395,6 @@ class GraphWorkflowDAG:
             raise ValueError(f"步骤 {step_id} 不存在")
         
         self.steps[step_id].status = "failed"
-        self.steps[step_id].result = error
     
     def get_step_info(self, step_id: int) -> Dict[str, Any]:
         """获取步骤的详细信息"""

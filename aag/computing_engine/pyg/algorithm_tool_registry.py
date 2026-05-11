@@ -19,6 +19,62 @@ from aag.computing_engine.pyg.dynamic_tool_registry import GraphDataConverter
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_numeric_features(graph, node_ids: list, exclude_fields: set) -> torch.Tensor:
+    """
+    从节点属性中自动提取数值特征矩阵。
+    跳过标签字段、ID 字段和无法转换为 float 的列。
+    若无可用属性列，回退到节点度作为特征。
+    """
+    if not node_ids:
+        return torch.zeros((0, 1), dtype=torch.float)
+
+    # 收集所有节点的属性字典
+    all_props = []
+    for nid in node_ids:
+        attrs = graph.nodes[nid]
+        props = attrs.get("properties", attrs)
+        all_props.append(props)
+
+    # 找出可以转为 float 的列（排除 label 字段）
+    sample = all_props[0] if all_props else {}
+    numeric_cols = []
+    for col in sample:
+        if col in exclude_fields:
+            continue
+        try:
+            float(sample[col])
+            numeric_cols.append(col)
+        except (ValueError, TypeError):
+            pass
+
+    if not numeric_cols:
+        # 回退：节点度
+        degrees = dict(graph.degree())
+        return torch.tensor([[float(degrees[n])] for n in node_ids], dtype=torch.float)
+
+    rows = []
+    for props in all_props:
+        row = []
+        for col in numeric_cols:
+            try:
+                row.append(float(props.get(col, 0.0) or 0.0))
+            except (ValueError, TypeError):
+                row.append(0.0)
+        rows.append(row)
+
+    feat = torch.tensor(rows, dtype=torch.float)
+
+    # 对每一列做 min-max 归一化，避免量纲差异
+    col_min = feat.min(dim=0).values
+    col_max = feat.max(dim=0).values
+    col_range = (col_max - col_min).clamp(min=1e-8)
+    feat = (feat - col_min) / col_range
+
+    logger.info(f"✅ 自动提取 {len(numeric_cols)} 个数值特征列: {numeric_cols}")
+    return feat
+
+
 # ============================================================================
 # 配置表：backbone 和 task
 # ============================================================================
@@ -47,7 +103,8 @@ TASK_NAMES = ["node_classification", "link_prediction"]
 TASK_DESCRIPTIONS = {
     "node_classification": (
         "使用 {backbone} backbone 进行节点分类。"
-        "需要提供 node_labels 参数（节点 ID 到类别整数的映射，例如 {{\"node_1\": 0, \"node_2\": 1}}）。"
+        "必须提供 node_labels_field 参数（节点属性字段名字符串，如 \"prior_sar_count\" 或 \"is_fraud\"），"
+        "系统将自动从图中读取该字段作为分类标签。请勿传入 node_labels 字典，应使用 node_labels_field 字段名。"
         "自动划分训练/测试集，返回测试准确率和每个已标注节点的预测类别。"
     ),
     "link_prediction": (
@@ -138,27 +195,53 @@ def _execute_node_classification(
                 if node_labels_field in props:
                     raw[str(nid)] = props[node_labels_field]
             if raw:
-                # 尝试转 int；失败则 label encode（字符串类别）
+                def _to_int_label(v):
+                    # numpy scalar → Python native
+                    if hasattr(v, 'item'):
+                        v = v.item()
+                    if isinstance(v, bool):
+                        return int(v)
+                    if isinstance(v, (int, float)):
+                        return int(v)
+                    if isinstance(v, str):
+                        low = v.strip().lower()
+                        if low in ('true', '1', 'yes'):
+                            return 1
+                        if low in ('false', '0', 'no', ''):
+                            return 0
+                        return int(float(low))
+                    raise ValueError(f"Cannot convert {type(v)} to int label")
+
                 try:
-                    node_labels = {k: int(float(v)) for k, v in raw.items()}
+                    node_labels = {k: _to_int_label(v) for k, v in raw.items()}
                 except (ValueError, TypeError):
-                    categories = sorted(set(raw.values()))
+                    categories = sorted(set(str(v) for v in raw.values()))
                     cat_map = {c: i for i, c in enumerate(categories)}
-                    node_labels = {k: cat_map[v] for k, v in raw.items()}
+                    node_labels = {k: cat_map[str(v)] for k, v in raw.items()}
 
         if not node_labels:
             return GenericToolOutput(
                 algorithm=algo_name, success=False,
-                error="node_labels is required",
-                summary='节点分类需要 node_labels 参数，格式: {"node_id": class_int, ...}',
+                error="node_labels_field is required for node classification",
+                summary='请提供 node_labels_field 参数（节点属性字段名，如 "prior_sar_count" 或 "is_fraud"），系统将自动从图中提取标签。',
             ).model_dump_json()
 
-        # 图数据转换
-        feat_tensor = torch.tensor(node_features, dtype=torch.float) if node_features else None
-        pyg_data = GraphDataConverter.networkx_to_pyg(processor.graph, feat_tensor)
+        label_dist = {}
+        for v in node_labels.values():
+            label_dist[v] = label_dist.get(v, 0) + 1
+        logger.info(f"[{algo_name}] label distribution: {label_dist}, num_classes={len(label_dist)}")
 
-        # 节点 ID → 索引映射
+        # 节点 ID → 索引映射（先建好，特征提取要用）
         node_ids = sorted(processor.graph.nodes())
+
+        # 图数据转换：若未提供特征，自动从节点属性提取数值列
+        if node_features:
+            feat_tensor = torch.tensor(node_features, dtype=torch.float)
+        else:
+            feat_tensor = _extract_numeric_features(
+                processor.graph, node_ids, exclude_fields={node_labels_field}
+            )
+        pyg_data = GraphDataConverter.networkx_to_pyg(processor.graph, feat_tensor)
         id_to_idx = {str(nid): idx for idx, nid in enumerate(node_ids)}
         num_nodes = len(node_ids)
 
@@ -197,6 +280,13 @@ def _execute_node_classification(
             list(backbone.parameters()) + list(head.parameters()), lr=lr
         )
 
+        # 类别权重
+        train_labels = y[train_mask]
+        class_counts = torch.bincount(train_labels, minlength=num_classes).float()
+        class_counts = class_counts.clamp(min=1)
+        class_weights = (1.0 / class_counts)
+        class_weights = class_weights / class_weights.sum() * num_classes
+
         # 训练循环
         backbone.train()
         head.train()
@@ -206,7 +296,7 @@ def _execute_node_classification(
             optimizer.zero_grad()
             emb    = backbone(pyg_data.x, pyg_data.edge_index)
             logits = head(emb)
-            loss   = F.cross_entropy(logits[train_mask], y[train_mask])
+            loss   = F.cross_entropy(logits[train_mask], y[train_mask], weight=class_weights)
             loss.backward()
             optimizer.step()
             loss_history.append(round(loss.item(), 4))
@@ -234,21 +324,39 @@ def _execute_node_classification(
             if labeled_mask[i]
         }
 
+        # 全图所有节点的预测（含无标签节点）
+        all_predictions = {
+            str(node_ids[i]): pred[i].item()
+            for i in range(num_nodes)
+        }
+
+        # 预测类别 != 0 的节点（0 视为"正常"），返回 list 方便 post-processing
+        suspicious_node_ids = [
+            nid for nid, cls in all_predictions.items() if cls != 0
+        ]
+
         result = {
-            "backbone":     backbone_name,
-            "task":         "node_classification",
-            "num_layers":   num_layers,
-            "num_classes":  num_classes,
-            "train_nodes":  int(train_mask.sum()),
-            "test_nodes":   int(test_mask.sum()),
-            "test_accuracy": round(test_acc, 4),
-            "final_loss":   loss_history[-1] if loss_history else 0.0,
-            "predictions":  predictions,
+            "backbone":             backbone_name,
+            "task":                 "node_classification",
+            "num_layers":           num_layers,
+            "num_classes":          num_classes,
+            "num_features":         int(pyg_data.x.size(1)),
+            "train_nodes":          int(train_mask.sum()),
+            "test_nodes":           int(test_mask.sum()),
+            "test_accuracy":        round(test_acc, 4),
+            "final_loss":           loss_history[-1] if loss_history else 0.0,
+            "suspicious_nodes":     suspicious_node_ids,
+            "suspicious_count":     len(suspicious_node_ids),
+            "all_predictions":      all_predictions,
+            "labeled_predictions":  predictions,
         }
 
         return GenericToolOutput(
             algorithm=algo_name, success=True, result=result,
-            summary=f"{backbone_name.upper()} 节点分类完成，测试准确率: {test_acc:.2%}",
+            summary=(
+                f"{backbone_name.upper()} 节点分类完成，测试准确率: {test_acc:.2%}，"
+                f"识别可疑节点: {len(suspicious_node_ids)} 个"
+            ),
         ).model_dump_json()
 
     except Exception as e:
@@ -285,8 +393,12 @@ def _execute_link_prediction(
         train_ratio     = kwargs["train_ratio"]
         node_features   = kwargs["node_features"]
 
-        # 图数据转换
-        feat_tensor = torch.tensor(node_features, dtype=torch.float) if node_features else None
+        # 图数据转换：若未提供特征，自动从节点属性提取数值列
+        node_ids = sorted(processor.graph.nodes())
+        if node_features:
+            feat_tensor = torch.tensor(node_features, dtype=torch.float)
+        else:
+            feat_tensor = _extract_numeric_features(processor.graph, node_ids, exclude_fields=set())
         pyg_data = GraphDataConverter.networkx_to_pyg(processor.graph, feat_tensor)
 
         edge_index = pyg_data.edge_index

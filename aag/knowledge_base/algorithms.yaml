@@ -10896,3 +10896,249 @@
     - Train embeddings and inspect loss history.
     - Produce node vectors for downstream graph learning.
     - Run inference with optional node features.
+
+- id: gcn_node_classification
+  task_type_id: NodeClassification
+  Deployment_method:
+    support_engine: pyg
+    input_schema:
+      parameters:
+        node_labels_field:
+          type: str
+          description: Name of the node attribute field to use as classification labels. E.g. "prior_sar_count" or "is_fraud".
+          required: true
+        hidden_channels:
+          type: int
+          description: Number of hidden channels in each GNN layer.
+          default: 64
+        num_layers:
+          type: int
+          description: Number of GNN layers (depth of message passing).
+          default: 2
+        epochs:
+          type: int
+          description: Number of training epochs.
+          default: 50
+        lr:
+          type: float
+          description: Learning rate for Adam optimizer.
+          default: 0.01
+        train_ratio:
+          type: float
+          description: Fraction of labeled nodes used for training (rest for testing).
+          default: 0.8
+    output_schema:
+      type: dict
+      description: Returns test_accuracy, final_loss, num_classes, and per-epoch loss history.
+    graph_type:
+      directed: both
+      multigraph: false
+      weighted: false
+      heterogeneous: false
+  Application_scenario: GCN (Graph Convolutional Network) applies uniform spectral-based neighborhood aggregation to classify nodes, where each neighbor contributes equally to the target node's representation. It performs well when the graph exhibits label homophily — a property where connected nodes statistically tend to belong to the same class, meaning edges predominantly link nodes of the same category. Typical examples include citation networks (papers citing papers in the same research field) and academic co-authorship graphs. When the underlying graph has low label homophily — meaning edges frequently connect nodes from different classes — uniform aggregation averages out class-discriminative signals and GCN's performance degrades.
+  Tuning_Mechanisms:
+    hidden_channels: Larger values increase model capacity. Start with 64; increase to 128-256 for complex graphs.
+    num_layers: More layers capture higher-order neighborhoods but risk over-smoothing. Typically 2-3 layers work best.
+    epochs: Increase if training loss has not converged. Monitor for overfitting on small graphs.
+    lr: Lower learning rates (0.001) improve stability on noisy graphs; 0.01 is a good default.
+
+- id: gat_node_classification
+  task_type_id: NodeClassification
+  Deployment_method:
+    support_engine: pyg
+    input_schema:
+      parameters:
+        node_labels_field:
+          type: str
+          description: Name of the node attribute field to use as classification labels.
+          required: true
+        hidden_channels:
+          type: int
+          description: Number of hidden channels per attention head.
+          default: 64
+        num_layers:
+          type: int
+          description: Number of GAT layers.
+          default: 2
+        epochs:
+          type: int
+          description: Number of training epochs.
+          default: 50
+        lr:
+          type: float
+          description: Learning rate for Adam optimizer.
+          default: 0.01
+        train_ratio:
+          type: float
+          description: Fraction of labeled nodes used for training.
+          default: 0.8
+    output_schema:
+      type: dict
+      description: Returns test_accuracy, final_loss, num_classes, and per-epoch loss history.
+    graph_type:
+      directed: both
+      multigraph: false
+      weighted: false
+      heterogeneous: false
+  Application_scenario: GAT (Graph Attention Network) uses multi-head attention to assign different importance weights to each neighbor during aggregation. Each node learns which neighbors are most relevant and suppresses uninformative ones. Well-suited for heterophilic graphs where connected nodes tend to have different labels, or when neighbor importance varies significantly across the graph.
+  Tuning_Mechanisms:
+    hidden_channels: Controls the size of each attention head output. Balance with number of heads (default 4 heads used internally).
+    num_layers: GAT can suffer from over-smoothing with too many layers; 2 layers usually optimal.
+    epochs: GAT typically needs more epochs than GCN to converge due to attention parameter overhead.
+    lr: Use 0.005-0.01; lower for graphs with high heterophily.
+
+- id: graphsage_node_classification
+  task_type_id: NodeClassification
+  Deployment_method:
+    support_engine: pyg
+    input_schema:
+      parameters:
+        node_labels_field:
+          type: str
+          description: Name of the node attribute field to use as classification labels.
+          required: true
+        hidden_channels:
+          type: int
+          description: Number of hidden channels in each GraphSAGE layer.
+          default: 64
+        num_layers:
+          type: int
+          description: Number of GraphSAGE layers.
+          default: 2
+        epochs:
+          type: int
+          description: Number of training epochs.
+          default: 50
+        lr:
+          type: float
+          description: Learning rate for Adam optimizer.
+          default: 0.01
+        train_ratio:
+          type: float
+          description: Fraction of labeled nodes used for training.
+          default: 0.8
+    output_schema:
+      type: dict
+      description: Returns test_accuracy, final_loss, num_classes, and per-epoch loss history.
+    graph_type:
+      directed: both
+      multigraph: false
+      weighted: false
+      heterogeneous: false
+  Application_scenario: GraphSAGE (Graph Sample and Aggregate) uses neighbor sampling with mean aggregation and a separate transformation for the ego node. It is inductive and can generalize to unseen nodes at inference time. Handles large graphs efficiently by sampling a fixed-size neighborhood rather than using all neighbors. Suited for graphs with highly variable node degrees or when the node set changes over time.
+  Tuning_Mechanisms:
+    hidden_channels: Typical range 64-256. GraphSAGE is more robust to hidden size than GCN.
+    num_layers: 2-3 layers are typical; GraphSAGE is less prone to over-smoothing than GCN.
+    epochs: 50-100 epochs usually sufficient; GraphSAGE converges faster than GAT.
+    lr: 0.01 is a reliable default; GraphSAGE is robust to learning rate choice.
+
+- id: gcn_link_prediction
+  task_type_id: LinkPrediction
+  Deployment_method:
+    support_engine: pyg
+    input_schema:
+      parameters:
+        hidden_channels:
+          type: int
+          description: Number of hidden channels in each GNN layer.
+          default: 64
+        num_layers:
+          type: int
+          description: Number of GNN layers.
+          default: 2
+        epochs:
+          type: int
+          description: Number of training epochs.
+          default: 50
+        lr:
+          type: float
+          description: Learning rate for Adam optimizer.
+          default: 0.01
+    output_schema:
+      type: dict
+      description: Returns AUC score, final_loss, and training history for link prediction.
+    graph_type:
+      directed: both
+      multigraph: false
+      weighted: false
+      heterogeneous: false
+  Application_scenario: GCN-based link prediction encodes node representations via spectral graph convolution, then scores candidate edges using dot product similarity. It is suitable for predicting future connections in graphs with strong homophily, such as academic collaboration networks or product co-purchase graphs. Use as a baseline for link prediction tasks where the graph topology is relatively uniform.
+  Tuning_Mechanisms:
+    hidden_channels: Larger embedding dimensions capture richer structural information for link scoring.
+    num_layers: 2 layers typically suffice; deeper networks may cause over-smoothing which hurts link discrimination.
+    epochs: 100-200 epochs recommended for link prediction to allow the negative sampling to converge.
+    lr: 0.01 is a good default; reduce to 0.001 for noisy or sparse graphs.
+
+- id: gat_link_prediction
+  task_type_id: LinkPrediction
+  Deployment_method:
+    support_engine: pyg
+    input_schema:
+      parameters:
+        hidden_channels:
+          type: int
+          description: Number of hidden channels per attention head.
+          default: 64
+        num_layers:
+          type: int
+          description: Number of GAT layers.
+          default: 2
+        epochs:
+          type: int
+          description: Number of training epochs.
+          default: 50
+        lr:
+          type: float
+          description: Learning rate for Adam optimizer.
+          default: 0.01
+    output_schema:
+      type: dict
+      description: Returns AUC score, final_loss, and training history for link prediction.
+    graph_type:
+      directed: both
+      multigraph: false
+      weighted: false
+      heterogeneous: false
+  Application_scenario: GAT-based link prediction uses attention-weighted node embeddings for edge scoring. The attention mechanism allows the model to focus on structurally significant neighbors when building node representations for link prediction. Particularly useful when link existence correlates with selective neighborhood patterns, such as in social trust networks or citation graphs where attention to specific neighbors matters.
+  Tuning_Mechanisms:
+    hidden_channels: Controls attention head size; balance with 4 internal attention heads.
+    num_layers: 2 layers optimal for most link prediction tasks.
+    epochs: GAT may need 100+ epochs for link prediction convergence.
+    lr: Start with 0.01; lower to 0.005 if training is unstable.
+
+- id: graphsage_link_prediction
+  task_type_id: LinkPrediction
+  Deployment_method:
+    support_engine: pyg
+    input_schema:
+      parameters:
+        hidden_channels:
+          type: int
+          description: Number of hidden channels in each GraphSAGE layer.
+          default: 64
+        num_layers:
+          type: int
+          description: Number of GraphSAGE layers.
+          default: 2
+        epochs:
+          type: int
+          description: Number of training epochs.
+          default: 50
+        lr:
+          type: float
+          description: Learning rate for Adam optimizer.
+          default: 0.01
+    output_schema:
+      type: dict
+      description: Returns AUC score, final_loss, and training history for link prediction.
+    graph_type:
+      directed: both
+      multigraph: false
+      weighted: false
+      heterogeneous: false
+  Application_scenario: GraphSAGE-based link prediction is well-suited for large-scale graphs where scalability is important. Its inductive nature allows it to predict links involving new nodes not seen during training. Effective for evolving transaction networks or recommendation graphs where the node set changes over time. Choose GraphSAGE when the graph is large, sparse, or when link prediction must generalize to new entities.
+  Tuning_Mechanisms:
+    hidden_channels: 64-128 is sufficient for most link prediction tasks.
+    num_layers: 2-3 layers; GraphSAGE maintains discriminative embeddings better than GCN at greater depths.
+    epochs: 50-100 epochs typically sufficient.
+    lr: 0.01 works well across most graph types.
