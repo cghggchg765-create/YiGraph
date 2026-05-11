@@ -1,4 +1,17 @@
+#!/usr/bin/env python3
 # api.py
+#
+# When running `python aag/api/DocumentAPI.py` from the repo root, Python's
+# `sys.path[0]` becomes `.../aag/api`, which does NOT include the repo root.
+# Then imports like `from aag.utils...` fail with `ModuleNotFoundError: aag`.
+# To make the script runnable directly, we add the repo root to `sys.path`.
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import json
 import asyncio
 from tqdm import tqdm
@@ -7,9 +20,11 @@ import yaml
 import datetime
 import logging
 from time import sleep
+import time
 logger = logging.getLogger(__name__)
 from aag.utils.path_utils import DATASETS_DIR, DATASETS_DATA_DIR, DATASETS_SCHEMA_DIR, DATASETS_INDEX_PATH
 from aag.data_pipeline.data_transformer.text_2_graph.text_2_graph import Text2Graph
+from aag.data_pipeline import csv_graph_llm
 
 
 def _resolve_schema_paths_in_place(dataset_dict: dict, schema_dir: str) -> None:
@@ -236,7 +251,11 @@ class DocumentAPIServer:
             return
 
         if dataset_schema["type"] == "text":
-            await self.upload_text_file(websocket, file_name, ds_name)
+            ext = os.path.splitext(file_name)[1].lower()
+            if ext == ".csv":
+                await self.upload_text_csv_graph_file(websocket, file_name, ds_name)
+            else:
+                await self.upload_text_file(websocket, file_name, ds_name)
         elif dataset_schema["type"] == "graph":
             await self.upload_graph_file(message, websocket, file_name, ds_name)
         else:
@@ -302,6 +321,72 @@ class DocumentAPIServer:
                 "type": "error",
                 "contentType": "text",
                 "content": f"上传失败 {str(error_msg)}"
+            }, ensure_ascii=False))
+
+    def _graph_schemas_yaml_path(self, ds_name: str) -> str:
+        return os.path.join(self.dataset_schema_dir, f"{ds_name}/graph_schemas.yaml")
+
+    def _remove_named_entry_from_graph_schemas_yaml(self, ds_name: str, entry_name: str) -> None:
+        graph_schema_file = self._graph_schemas_yaml_path(ds_name)
+        if not os.path.exists(graph_schema_file):
+            return
+        with open(graph_schema_file, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        datasets_list = data.get("datasets")
+        if not isinstance(datasets_list, list):
+            return
+        data["datasets"] = [d for d in datasets_list if d.get("name") != entry_name]
+        with open(graph_schema_file, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, sort_keys=False, allow_unicode=True)
+
+    async def upload_text_csv_graph_file(self, websocket, file_name, ds_name):
+        """
+        文本数据集中的 CSV：落在 text/ 目录，不写 Markdown；仅更新 text_schemas.yaml，
+        与 txt/pdf 等一致——graph_schemas.yaml 在解析完成后再建立（由后续解析流程写入）。
+        """
+        file_path = os.path.join(self.dataset_data_dir, f"{ds_name}/text/{file_name}")
+        error_msg = None
+        try:
+            if not os.path.isfile(file_path):
+                raise FileNotFoundError(f"未找到已上传文件: {file_path}")
+
+            new_schema = {
+                "name": file_name,
+                "description": f"{file_name}（CSV 边表，待自动推断字段与建图）",
+                "type": "csv_graph",
+                "graph_status": "pending",
+                "parsing_rate": 0,
+                "create_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "schema": {
+                    "path": file_path,
+                    "original_path": file_path,
+                    "format": "csv",
+                },
+            }
+
+            output_file = []
+            for key in self.each_dataset:
+                output_file.append(self.each_dataset[key])
+            output_file.append(new_schema)
+            final_schema = {"datasets": output_file}
+
+            with open(self.each_dataset_schema_file, "w", encoding="utf-8") as f:
+                yaml.dump(final_schema, f, sort_keys=False, allow_unicode=True)
+
+            await websocket.send(json.dumps({
+                "type": "data",
+                "contentType": "json",
+                "content": {
+                    "success": True,
+                    "data": {"file_name": file_name, "type": "csv_graph"},
+                },
+            }, ensure_ascii=False))
+        except Exception as e:
+            error_msg = str(e)
+            await websocket.send(json.dumps({
+                "type": "error",
+                "contentType": "text",
+                "content": f"上传失败 {error_msg}",
             }, ensure_ascii=False))
 
     async def upload_graph_file(self, message, websocket, file_name, ds_name):
@@ -632,13 +717,17 @@ class DocumentAPIServer:
                     with open(self.graph_schema_file, "w", encoding="utf-8") as f:
                         yaml.dump(all_data, f, sort_keys=False, allow_unicode=True)
             if self.datasets[ds_name]["type"] == "text":
+                text_entry_type = self.each_dataset[file_name].get("type")
                 schema = self.each_dataset[file_name].get("schema", {})
                 path = schema.get("path")
-                if path and os.path.exists(path):
-                    os.remove(path)
                 original_path = schema.get("original_path")
-                if original_path and os.path.exists(original_path):
-                    os.remove(original_path)
+                seen = set()
+                for p in (path, original_path):
+                    if not p or p in seen:
+                        continue
+                    seen.add(p)
+                    if os.path.exists(p):
+                        os.remove(p)
                 # 删除内存中的记录
                 del self.each_dataset[file_name]
                 # 更新 YAML 文件：先读全部，再去掉这个文本文件
@@ -651,6 +740,9 @@ class DocumentAPIServer:
 
                     with open(self.each_dataset_schema_file, "w", encoding="utf-8") as f:
                         yaml.dump(all_data, f, sort_keys=False, allow_unicode=True)
+                # 仅 CSV 图占位在 graph_schemas.yaml；普通 markdown/txt 等删除逻辑保持原样，不碰 graph_schemas
+                if text_entry_type == "csv_graph":
+                    self._remove_named_entry_from_graph_schemas_yaml(ds_name, file_name)
                         
             # 成功返回
             await websocket.send(json.dumps({
@@ -677,6 +769,14 @@ class DocumentAPIServer:
     async def parsing_text_file(self, websocket, message):
         file_name = message["file_name"]
         ds_name = message["ds_name"]
+        type = message.get("type", "ollama")
+        api_key = message.get("api_key", "")
+        base_url = message.get("base_url", None)
+        llm_name = message.get("llm_name", "glm-5")
+        mode = message.get("mode", "single")
+        thread_count = message.get("thread_count", 1)
+        chunk_size = message.get("chunk_size", 512)
+
 
         self.load_each_dataset(ds_name)
 
@@ -694,6 +794,10 @@ class DocumentAPIServer:
                 "content": f"file '{file_name}' already parse."
             }, ensure_ascii=False))
             return
+
+        if self.each_dataset[file_name].get("type") == "csv_graph":
+            await self._parsing_csv_graph_file(websocket, message)
+            return
         
         try:
             self.each_dataset[file_name]["graph_status"] = "parsing"
@@ -708,15 +812,28 @@ class DocumentAPIServer:
             file_path = self.each_dataset[file_name]["schema"]["path"]
             graph_name = file_name
             text_2_graph = Text2Graph(
+                base_url=base_url,
+                type=type,
                 file_path=file_path,
                 graph_name=graph_name,
-                llm_name='llama3:8b',
-                chunk_size=512
+                llm_name=llm_name,
+                api_key=api_key,
+                chunk_size=chunk_size,
+                thread_count=thread_count
             )
 
             await websocket.send(json.dumps({"type": "status", "message": "Extracting triplets and entities..."}))
 
-            triplets, entity2id, entity2type = text_2_graph.extract_graph_and_entity_by_LLM(self.each_dataset, file_name, self.each_dataset_schema_file)
+            if mode == "single":
+                triplets, entity2id, entity2type, parse_metrics = text_2_graph.extract_graph_and_entity_by_LLM(
+                    self.each_dataset, file_name, self.each_dataset_schema_file
+                )
+            elif mode == "multiple":
+                triplets, entity2id, entity2type, parse_metrics = text_2_graph.extract_graph_and_entity_by_LLM_with_mutiple(
+                    self.each_dataset, file_name, self.each_dataset_schema_file
+                )
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
 
             await websocket.send(json.dumps({"type": "status", "message": "Saving graph..."}))
 
@@ -728,6 +845,79 @@ class DocumentAPIServer:
 
             new_schema = text_2_graph.save_graph_with_entity(
                 triplets, entity2id, entity2type, graph_schema_file
+            )
+
+            metrics_log = {
+                "event": "TEXT_DATASET_PARSE_METRICS",
+                "dataset": ds_name,
+                "file": file_name,
+                "mode": mode,
+                "provider": parse_metrics.get("provider", type),
+                "model": parse_metrics.get("model", llm_name),
+                "elapsed_ms": {
+                    "value": parse_metrics.get("elapsed_ms"),
+                    "desc": "从开始文本抽取到图文件/Schema 生成完成的总耗时(毫秒)",
+                },
+                "llm_elapsed_ms": {
+                    "value": parse_metrics.get("llm_elapsed_ms"),
+                    "desc": "仅 LLM 调用累计耗时(毫秒)",
+                },
+                "chunk_count": {
+                    "value": parse_metrics.get("chunk_count"),
+                    "desc": "文本分块总数",
+                },
+                "llm_call_count": {
+                    "value": parse_metrics.get("llm_call_count"),
+                    "desc": "LLM 总调用次数（含实体类型补全）",
+                },
+                "retry_count": {
+                    "value": parse_metrics.get("retry_count"),
+                    "desc": "LLM 重试次数",
+                },
+                "prompt_tokens": {
+                    "value": parse_metrics.get("prompt_tokens"),
+                    "desc": "输入 token 数（OpenAI usage，可空）",
+                },
+                "completion_tokens": {
+                    "value": parse_metrics.get("completion_tokens"),
+                    "desc": "输出 token 数（OpenAI usage，可空）",
+                },
+                "total_tokens": {
+                    "value": parse_metrics.get("total_tokens"),
+                    "desc": "总 token 数（OpenAI usage，可空）",
+                },
+                "text_bytes": {
+                    "value": parse_metrics.get("text_bytes"),
+                    "desc": "原始输入文档大小（字节）",
+                },
+                "text_chars": {
+                    "value": parse_metrics.get("text_chars"),
+                    "desc": "参与分块解析文本总字符数",
+                },
+                "markdown_text_bytes": {
+                    "value": parse_metrics.get("markdown_text_bytes"),
+                    "desc": "MarkItDown 转换后文本 UTF-8 大小（字节）",
+                },
+                "markdown_text_chars": {
+                    "value": parse_metrics.get("markdown_text_chars"),
+                    "desc": "MarkItDown 转换后文本字符数",
+                },
+                "markdown_file_size_bytes": {
+                    "value": parse_metrics.get("markdown_file_size_bytes"),
+                    "desc": "落盘 Markdown 文件大小（字节）",
+                },
+                "triplet_count": {
+                    "value": len(triplets),
+                    "desc": "最终生成三元组数量",
+                },
+                "vertex_count": {
+                    "value": len(entity2id),
+                    "desc": "最终生成实体数量",
+                },
+            }
+            logger.info(
+                "\n================ 文本数据集解析指标 ================\n%s\n=====================================================",
+                json.dumps(metrics_log, ensure_ascii=False, indent=2),
             )
 
             self.each_dataset[file_name]["graph_status"] = "completed"
@@ -762,6 +952,128 @@ class DocumentAPIServer:
                 "file_name": file_name,
                 "ds_name": ds_name,
                 "content": f"解析失败 {str(e)}"
+            }, ensure_ascii=False))
+
+    async def _parsing_csv_graph_file(self, websocket, message):
+        """文本知识库 CSV：LLM 推断列 → 生成与 Text2Graph 一致的 accounts/transactions CSV 并写入 graph_schemas.yaml。"""
+        file_name = message["file_name"]
+        ds_name = message["ds_name"]
+        llm_type = message.get("type", "ollama")
+        api_key = message.get("api_key", "")
+        base_url = message.get("base_url", None)
+        llm_name = message.get("llm_name", "glm-5")
+
+        def _persist_text_schema():
+            out = [self.each_dataset[k] for k in self.each_dataset]
+            with open(self.each_dataset_schema_file, "w", encoding="utf-8") as f:
+                yaml.dump({"datasets": out}, f, sort_keys=False, allow_unicode=True)
+
+        try:
+            t_total = time.perf_counter()
+            self.each_dataset[file_name]["graph_status"] = "parsing"
+            _persist_text_schema()
+
+            await websocket.send(json.dumps({"type": "status", "message": "正在用 LLM 推断 CSV 列语义（源/目标/关系/边属性）..."}))
+
+            user_csv = self.each_dataset[file_name]["schema"]["path"]
+            columns, rows = csv_graph_llm.read_user_csv(user_csv)
+            if len(columns) < 2:
+                raise ValueError("CSV 至少需要 2 列")
+
+            fallback_used = False
+            llm_metrics = {
+                "provider": llm_type,
+                "model": llm_name,
+                "llm_elapsed_ms": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "retry_count": None,
+            }
+            try:
+                raw_infer, llm_metrics = csv_graph_llm.infer_csv_schema_with_llm(
+                    columns, rows, llm_type, llm_name, api_key, base_url
+                )
+                infer = csv_graph_llm._validate_infer(columns, raw_infer)
+            except Exception as ex:
+                logger.warning("CSV LLM 列推断失败，使用启发式: %s", ex)
+                fallback_used = True
+                infer = csv_graph_llm._validate_infer(columns, csv_graph_llm._heuristic_schema(columns))
+
+            await websocket.send(json.dumps({"type": "status", "message": "正在生成顶点/边表并写入 graph_schemas..."}))
+
+            process_dir = os.path.join(self.dataset_data_dir, f"{ds_name}/process_text")
+            os.makedirs(process_dir, exist_ok=True)
+            schema_dict = csv_graph_llm.materialize_text_csv_graph(
+                user_csv_path=user_csv,
+                process_text_dir=process_dir,
+                graph_name=file_name,
+                rows=rows,
+                infer=infer,
+            )
+
+            graph_schema_file = os.path.join(self.dataset_schema_dir, f"{ds_name}/graph_schemas.yaml")
+            if not os.path.exists(graph_schema_file):
+                with open(graph_schema_file, "w", encoding="utf-8") as f:
+                    f.write("datasets: []\n")
+            csv_graph_llm.merge_graph_schema_yaml(graph_schema_file, schema_dict)
+
+            self.each_dataset[file_name]["graph_status"] = "completed"
+            self.each_dataset[file_name]["parsing_rate"] = 1.0
+            _persist_text_schema()
+
+            n_edges = schema_dict["schema"]["graph_store_info"].get("edge_count", 0)
+            n_vertices = schema_dict["schema"]["graph_store_info"].get("vertex_count", 0)
+            elapsed_ms = int((time.perf_counter() - t_total) * 1000)
+            metrics_log = {
+                "event": "CSV_TEXT_DATASET_PARSE_METRICS",
+                "dataset": ds_name,
+                "file": file_name,
+                "elapsed_ms": {"value": elapsed_ms, "desc": "从进入 CSV 解析分支到完成写入 schema 的总耗时(毫秒)"},
+                "llm_elapsed_ms": {"value": llm_metrics.get("llm_elapsed_ms"), "desc": "仅 LLM 字段推断请求耗时(毫秒)"},
+                "row_count": {"value": len(rows), "desc": "读取到的 CSV 行数（不含表头）"},
+                "edge_count": {"value": n_edges, "desc": "最终生成的边数量"},
+                "vertex_count": {"value": n_vertices, "desc": "最终生成的顶点数量"},
+                "prompt_tokens": {"value": llm_metrics.get("prompt_tokens"), "desc": "提示词 token 数（OpenAI usage，可空）"},
+                "completion_tokens": {"value": llm_metrics.get("completion_tokens"), "desc": "模型输出 token 数（OpenAI usage，可空）"},
+                "total_tokens": {"value": llm_metrics.get("total_tokens"), "desc": "总 token 数（OpenAI usage，可空）"},
+                "model": {"value": llm_metrics.get("model", llm_name), "desc": "模型名称"},
+                "provider": {"value": llm_metrics.get("provider", llm_type), "desc": "模型提供方"},
+                "fallback_used": {"value": fallback_used, "desc": "是否触发了启发式回退（true=LLM推断失败后回退）"},
+            }
+            logger.info(
+                "\n================ CSV 文本数据集解析指标 ================\n%s\n=======================================================",
+                json.dumps(metrics_log, ensure_ascii=False, indent=2),
+            )
+
+            response_data = {
+                "type": "data",
+                "contentType": "json",
+                "content": {
+                    "success": True,
+                    "data": {
+                        "id": len(self.each_dataset),
+                        "名称": file_name,
+                        "三元组个数": n_edges,
+                        "创建时间": schema_dict["create_time"],
+                    },
+                },
+            }
+            await websocket.send(json.dumps(response_data, ensure_ascii=False))
+        except Exception as e:
+            logger.exception("CSV 建图解析失败")
+            try:
+                self.each_dataset[file_name]["graph_status"] = "pending"
+                self.each_dataset[file_name]["parsing_rate"] = 0
+                _persist_text_schema()
+            except Exception:
+                pass
+            await websocket.send(json.dumps({
+                "type": "error",
+                "contentType": "text",
+                "file_name": file_name,
+                "ds_name": ds_name,
+                "content": f"CSV 解析失败 {str(e)}",
             }, ensure_ascii=False))
 
     def load_each_dataset_graph_schema(self, ds_name: str):
@@ -810,6 +1122,7 @@ class DocumentAPIServer:
         source_field = schema["edge"][0]["source_field"]
         target_field = schema["edge"][0]["target_field"]
         label_field_edge = schema["edge"][0].get("label_field", "type")
+        attr_fields = schema["edge"][0].get("attribute_fields") or []
 
         triplets = []
         with open(edge_path, newline="", encoding="utf-8") as f:
@@ -821,7 +1134,10 @@ class DocumentAPIServer:
             for row in reader:
                 src_name = id_to_name.get(row[source_field], row[source_field])
                 tgt_name = id_to_name.get(row[target_field], row[target_field])
-                label = row.get(label_field_edge, "")
+                if isinstance(attr_fields, (list, tuple)) and len(attr_fields) > 0:
+                    label = " ".join(str(row.get(f, "")).strip() for f in attr_fields)
+                else:
+                    label = str(row.get(label_field_edge, "")).strip()
                 triplets.append([src_name, label, tgt_name])
         return triplets
 
@@ -955,7 +1271,10 @@ class DocumentAPIServer:
                     src = row[edge_src_field]
                     dst = row[edge_dst_field]
                     #rel = row[edge_rel_field]
-                    rel = "  ".join([row[field] for field in edge_relation_field])
+                    if isinstance(edge_relation_field, (list, tuple)) and edge_relation_field:
+                        rel = " ".join(str(row.get(field, "")).strip() for field in edge_relation_field)
+                    else:
+                        rel = ""
                     # 如果顶点文件存在，替换 id -> name
                     if id2name:
                         src = id2name.get(src, src)
@@ -1013,6 +1332,12 @@ class DocumentAPIServer:
         try:
             overall_triplets = []
             for graph_name in self.graph_schema:
+                g = self.graph_schema[graph_name]
+                if g.get("graph_status") != "completed":
+                    continue
+                sch = g.get("schema") or {}
+                if not (sch.get("edge") or []):
+                    continue
                 triplets = self.read_graph_triplets(graph_name)
                 overall_triplets.extend(triplets)
 
@@ -1259,7 +1584,7 @@ class DocumentAPIServer:
                 }, ensure_ascii=False))
                 return
 
-            if self.each_dataset[file_name].get("graph_status", "") != "parsing":
+            if self.each_dataset[file_name].get("graph_status", "") != "parsing" and self.each_dataset[file_name].get("graph_status", "") != "completed":
                 await websocket.send(json.dumps({
                     "type": "error",
                     "contentType": "text",
@@ -1329,10 +1654,35 @@ async def main():
     class DummySocket:
         """模拟前端 websocket"""
         async def send(self, msg):
-            #print("[TEST OUTPUT]", msg)
-            pass
+            # In __main__ mode we only have a dummy websocket; print responses
+            # so running this file directly shows what's going on.
+            print("[TEST OUTPUT]", msg, flush=True)
 
         def __init__(self):
+            self.message = json.dumps({"action": "parsing_file", 
+                            "file_name": "debug_document1.md",
+                            "ds_name": "Debug0320",
+                            "type": "ollama",
+                            "api_key": "YOUR_API_KEY",
+                            "base_url": "YOUR_BASE_URL",
+             
+                            "llm_name": "LLAMA3.1:70B",
+                            "mode":"single",
+                            "thread_count": 1,
+                            "chunk_size": 3072
+                            })
+             #self.message = json.dumps({"action": "parsing_file", 
+                                #"file_name": "debug_document1.md",
+                                #"ds_name": "Debug0320",
+                                #"type": "ollama",
+                                #"llm_name": "llama3.2:3b",
+                                #"mode":"single",
+                                #"thread_count": 1,
+                                #"chunk_size": 5120
+                                #})
+            #self.message = json.dumps({"action":"schema_refine", 
+            #                 "file_name": "debug_document1.md",
+            #                 "ds_name": "Debug0320"})
             # 模拟前端发送两条消息：创建和删除
             # self.message = json.dumps({"action": "create_dataset", 
             #                 "name": "fzb_debug_graph",
@@ -1367,9 +1717,9 @@ async def main():
             # self.message = json.dumps({"action": "get_file_triplets", 
             #                 "file_name": "example.txt",
             #                 "ds_name": "fzb_debug"})
-            self.message = json.dumps({"action": "get_file_triplets", 
-                            "file_name": "paper4.pdf",
-                            "ds_name": "fzb_debug"})
+            # self.message = json.dumps({"action": "get_file_triplets", 
+            #                 "file_name": "paper4.pdf",
+            #                 "ds_name": "fzb_debug"})
             # self.message = json.dumps({"action": "get_file_triplets_from_graph_dataset", 
             #                 # "file_name": "example.docx_transactions.csv",
             #                 "ds_name": "fzb_debug_graph"})

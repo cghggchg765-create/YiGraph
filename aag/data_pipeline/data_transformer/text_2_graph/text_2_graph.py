@@ -1,5 +1,9 @@
 import re
-from typing import Dict, Any, List
+import os
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Any, List, Tuple, Optional
 from tqdm import tqdm
 import datetime
 import json
@@ -7,6 +11,17 @@ import json
 from aag.utils.file_operation import file_exist
 from aag.utils.parse_json import extract_json_from_response
 from aag.reasoner.model_deployment import OllamaEnv
+from aag.reasoner.model_deployment import OpenAIEnv
+
+
+def _llm_completion_text(raw: Any) -> str:
+    """将 Ollama completion（含 .text）、OpenAI 的 str、或 None 统一为纯文本。"""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return (getattr(raw, "text", None) or "") or ""
+
 
 prompt_template_str = """
 #### Process
@@ -138,7 +153,7 @@ OTHER
 
 
 class Text2Graph:
-    def __init__(self, file_path: str, graph_name: str, llm_name: str, chunk_size: int = 512):
+    def __init__(self, type: str, file_path: str, graph_name: str, llm_name: str, api_key: str, chunk_size: int = 512, base_url: str = None, thread_count: int = 1):
         """
         初始化文本到图转换器
         
@@ -147,12 +162,21 @@ class Text2Graph:
         """
         self.file_path = file_path
         self.graph_name = graph_name
+        self.thread_count = thread_count
+        self.chunk_size = chunk_size
+        self.provider = type
+        self.model_name = llm_name
 
         if not file_exist(self.file_path):
             raise FileNotFoundError(f"文本文件未找到: {self.file_path}")
         
         # sentences = re.split(r'(?<=[。！？\n])', self.read_file_path().strip())  # 按句子切分
-        sentences = re.split(r'(?<=[。！？\n])', self.read_file_path_markitdown().strip())  # 按句子切分
+        markdown_text = self.read_file_path_markitdown()
+        self.markdown_text_chars = len(markdown_text)
+        self.markdown_text_bytes = len(markdown_text.encode("utf-8"))
+        self.source_file_size_bytes = os.path.getsize(self.file_path) if os.path.exists(self.file_path) else None
+        self.markdown_file_size_bytes = os.path.getsize(self.md_file_path) if os.path.exists(self.md_file_path) else None
+        sentences = re.split(r'(?<=[。！？\n])', markdown_text.strip())  # 按句子切分
         self.text_chunks = []
         current_chunk = ''
 
@@ -167,8 +191,98 @@ class Text2Graph:
             self.text_chunks.append(current_chunk)
         
         print(f"文本已加载，共 {len(self.text_chunks)} 个块, 每块约 {chunk_size} 字符。")
+        if type == "ollama":
+            self.llm = OllamaEnv(llm_mode_name = llm_name)
+        elif type == "openai":
+            self.llm = OpenAIEnv(api_key = api_key, model_name = llm_name, base_url = base_url)
+            print(f"使用 OpenAI 模型: {llm_name}")
+        else:
+            raise ValueError(f"不支持的类型: {type}")
 
-        self.llm = OllamaEnv(llm_mode_name = llm_name)
+    @staticmethod
+    def _empty_parse_metrics() -> Dict[str, Any]:
+        return {
+            "llm_elapsed_ms": 0,
+            "llm_call_count": 0,
+            "llm_success_count": 0,
+            "llm_fail_count": 0,
+            "retry_count": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "entity_type_infer_calls": 0,
+        }
+
+    @staticmethod
+    def _merge_parse_metrics(dst: Dict[str, Any], src: Dict[str, Any]) -> None:
+        for k in (
+            "llm_elapsed_ms",
+            "llm_call_count",
+            "llm_success_count",
+            "llm_fail_count",
+            "retry_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "entity_type_infer_calls",
+        ):
+            dst[k] = (dst.get(k, 0) or 0) + (src.get(k, 0) or 0)
+
+    def _invoke_llm_with_metrics(self, prompt: str) -> Tuple[str, Dict[str, Optional[int]], int]:
+        """
+        统一执行一次 LLM 调用并返回文本、token usage 与耗时（毫秒）。
+        OpenAI 模型可拿到 usage；其他模型 usage 为空值。
+        """
+        t0 = time.perf_counter()
+        usage: Dict[str, Optional[int]] = {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+        }
+        text = ""
+        if hasattr(self.llm, "client") and hasattr(self.llm, "model"):
+            resp = self.llm.client.chat.completions.create(
+                model=self.llm.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = (resp.choices[0].message.content or "") if getattr(resp, "choices", None) else ""
+            u = getattr(resp, "usage", None)
+            if u is not None:
+                usage["prompt_tokens"] = getattr(u, "prompt_tokens", None)
+                usage["completion_tokens"] = getattr(u, "completion_tokens", None)
+                usage["total_tokens"] = getattr(u, "total_tokens", None)
+        else:
+            raw = self.llm.generate_response(query=prompt)
+            text = _llm_completion_text(raw)
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        return text, usage, elapsed_ms
+
+    def _generate_with_metrics(self, prompt: str) -> Tuple[str, Dict[str, Any]]:
+        """
+        统一执行一次 LLM 调用并返回文本与用量指标。
+        - OpenAI: 直接走 client.chat.completions，获取 usage token。
+        - 其他提供方: 回退 generate_response，仅记录耗时。
+        """
+        t0 = time.perf_counter()
+        usage_obj = None
+        if self.provider == "openai" and hasattr(self.llm, "client"):
+            resp = self.llm.client.chat.completions.create(
+                model=self.llm.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            usage_obj = getattr(resp, "usage", None)
+            text = (resp.choices[0].message.content or "") if getattr(resp, "choices", None) else ""
+        else:
+            raw = self.llm.generate_response(query=prompt)
+            text = _llm_completion_text(raw)
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        metric = {
+            "elapsed_ms": elapsed_ms,
+            "prompt_tokens": getattr(usage_obj, "prompt_tokens", None) if usage_obj is not None else None,
+            "completion_tokens": getattr(usage_obj, "completion_tokens", None) if usage_obj is not None else None,
+            "total_tokens": getattr(usage_obj, "total_tokens", None) if usage_obj is not None else None,
+        }
+        return text, metric
 
     def read_file_path(self) -> str:
         import os
@@ -248,13 +362,13 @@ class Text2Graph:
         for idx, chunk in enumerate(tqdm(self.text_chunks)):
             
             for attempt in range(1, MAX_RETRIES + 1):
-                response = self.llm.generate_response(query=prompt_template_str.format(context=chunk))
-                # 判空
-                if not response:
+                raw = self.llm.generate_response(query=prompt_template_str.format(context=chunk))
+                text = _llm_completion_text(raw)
+                if not text:
                     print(f"⚠️ 块 {idx} 第 {attempt} 次尝试未获得响应")
                     continue
                 # 尝试解析 JSON
-                response_parsed = extract_json_from_response(response)
+                response_parsed = extract_json_from_response(text)
                 if isinstance(response_parsed, str):
                     print(f"⚠️ 块 {idx} 第 {attempt} 次响应解析失败")
                     continue
@@ -291,7 +405,7 @@ class Text2Graph:
             for triplet in response.get("triplets", []):
                 # 1️⃣ 必须是列表/元组且长度为3
                 if not isinstance(triplet, (list, tuple)) or len(triplet) != 3:
-                    print(f"⚠️ 无效三元组，跳过: {triplet}")
+                    #print(f"⚠️ 无效三元组，跳过: {triplet}")
                     continue
                 
                 # 2️⃣ 遍历每个元素，处理字符串大小写
@@ -306,7 +420,7 @@ class Text2Graph:
 
             triplets.extend(new_triplets)
 
-        print(f"提取完成，共获得 {len(triplets)} 个三元组。")
+        #print(f"提取完成，共获得 {len(triplets)} 个三元组。")
         return triplets
 
     def save_triplet(self, triplets: List[List[str]]):
@@ -319,16 +433,16 @@ class Text2Graph:
         valid_triplets = []
         for t in triplets:
             if len(t) != 3:
-                print(f"⚠️ 无效三元组，跳过: {t}")
+                #print(f"⚠️ 无效三元组，跳过: {t}")
                 continue
             head, rel, tail = t
             if not head or not tail or not rel:
-                print(f"⚠️ 三元组元素为空，跳过: {t}")
+                #print(f"⚠️ 三元组元素为空，跳过: {t}")
                 continue
             valid_triplets.append([head, rel, tail])
 
         if not valid_triplets:
-            print("⚠️ 没有合法三元组，退出。")
+            #print("⚠️ 没有合法三元组，退出。")
             return
 
         entities = {}
@@ -351,8 +465,8 @@ class Text2Graph:
             for head, rel, tail in valid_triplets:
                 writer.writerow([entities[head], entities[tail], rel])
 
-        print(f"✅ 实体 CSV 保存到: {entities_csv_path}")
-        print(f"✅ 边 CSV 保存到: {triplets_csv_path}")
+        #print(f"✅ 实体 CSV 保存到: {entities_csv_path}")
+        #print(f"✅ 边 CSV 保存到: {triplets_csv_path}")
 
         schema_path = os.path.join(dir_path, f"{base_name}_graph_schemas.yaml")
         graph_name = f"{base_name}_Graph"
@@ -408,7 +522,7 @@ class Text2Graph:
         with open(schema_path, "w", encoding="utf-8") as f:
             yaml.dump(schema_dict, f, sort_keys=False, allow_unicode=True)
 
-        print(f"✅ Graph schema YAML: {schema_path}")
+        #  print(f"✅ Graph schema YAML: {schema_path}")
 
     def extract_graph_by_openie(self):
         print("开始使用OpenIE从文本中提取知识图谱...")
@@ -417,13 +531,13 @@ class Text2Graph:
         except ImportError:
             import subprocess, sys
             package_name = "stanford-openie"
-            print(f"⚙️ 检测到未安装依赖 '{package_name}'，正在自动安装...")
+            #print(f"⚙️ 检测到未安装依赖 '{package_name}'，正在自动安装...")
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-                print(f"✅ 成功安装 {package_name}")
+                #print(f"✅ 成功安装 {package_name}")
                 from openie import StanfordOpenIE  # 再次导入
             except subprocess.CalledProcessError as e:
-                print(f"❌ 安装 {package_name} 失败，请手动安装：pip install {package_name}")
+                #print(f"❌ 安装 {package_name} 失败，请手动安装：pip install {package_name}")
                 raise e
         
         triplets = []
@@ -438,7 +552,7 @@ class Text2Graph:
                     tail = triple['object'].strip().capitalize()
                     triplet = [head, relation, tail]
                     triplets.append(triplet)
-        print(f"提取完成，共获得 {len(triplets)} 个三元组。")
+        #print(f"提取完成，共获得 {len(triplets)} 个三元组。")
         print(triplets)
         assert False, "stop here"
         return triplets
@@ -453,15 +567,39 @@ class Text2Graph:
             entity2type: 实体 -> 类型
         """
         print(f"开始使用 LLM 从文本中提取知识图谱...")
+        t_total = time.perf_counter()
         triplets: List[List[str]] = []
         entity2type: Dict[str, str] = {}
+        total_calls = 0
+        total_retries = 0
+        total_llm_elapsed_ms = 0
+        prompt_tokens_sum = 0
+        completion_tokens_sum = 0
+        total_tokens_sum = 0
+        token_observed = False
 
         for idx, chunk in enumerate(tqdm(self.text_chunks)):
 
             for attempt in range(1, MAX_RETRIES + 1):
-                response = self.llm.generate_response(query=prompt_template_str.format(context=chunk)).text
+                total_calls += 1
+                response, call_metric = self._generate_with_metrics(prompt_template_str.format(context=chunk))
+                total_llm_elapsed_ms += call_metric.get("elapsed_ms", 0) or 0
+                pt = call_metric.get("prompt_tokens")
+                ct = call_metric.get("completion_tokens")
+                tt = call_metric.get("total_tokens")
+                if isinstance(pt, int):
+                    prompt_tokens_sum += pt
+                    token_observed = True
+                if isinstance(ct, int):
+                    completion_tokens_sum += ct
+                    token_observed = True
+                if isinstance(tt, int):
+                    total_tokens_sum += tt
+                    token_observed = True
                 if not response:
-                    print(f"⚠️ 块 {idx} 第 {attempt} 次无响应")
+                    #print(f"⚠️ 块 {idx} 第 {attempt} 次无响应")
+                    if attempt > 1:
+                        total_retries += 1
                     continue
                 
                 cleaned = response.strip()
@@ -472,7 +610,9 @@ class Text2Graph:
                 # match {} content
                 match = re.search(r'\{[\s\S]*\}', cleaned)
                 if not match:
-                    print(f"❌ 未找到 JSON 内容，原始响应:\n{cleaned}")
+                    #print(f"❌ 未找到 JSON 内容，原始响应:\n{cleaned}")
+                    if attempt > 1:
+                        total_retries += 1
                     continue
 
                 json_str = match.group(0)
@@ -481,16 +621,20 @@ class Text2Graph:
                     response_parsed = json.loads(json_str)
                 except json.JSONDecodeError as e:
                     # JSON 解析失败，记录日志并跳过当前条目
-                    print(f"[Warning] JSON parsing failed at index {idx} of {attempt}: {e}")
+                    #print(f"[Warning] JSON parsing failed at index {idx} of {attempt}: {e}")
+                    if attempt > 1:
+                        total_retries += 1
                     continue
 
                 if not isinstance(response_parsed, dict):
-                    print(f"⚠️ 块 {idx} 第 {attempt} 次 JSON 解析失败")
+                    #print(f"⚠️ 块 {idx} 第 {attempt} 次 JSON 解析失败")
+                    if attempt > 1:
+                        total_retries += 1
                     continue
                 response = response_parsed
                 break
             else:
-                print(f"❌ 块 {idx} 超过 {MAX_RETRIES} 次尝试失败，跳过")
+                #print(f"❌ 块 {idx} 超过 {MAX_RETRIES} 次尝试失败，跳过")
                 continue
             
                 
@@ -511,7 +655,7 @@ class Text2Graph:
             new_triplets = []
             for triplet in response.get("triplets", []):
                 if not isinstance(triplet, (list, tuple)) or len(triplet) != 3:
-                    print(f"⚠️ 无效三元组，跳过: {triplet}")
+                    #print(f"⚠️ 无效三元组，跳过: {triplet}")
                     continue
                 # 去掉空字符串，只保留非空字符串和数字/其他类型
                 clean_triplet = []
@@ -531,7 +675,8 @@ class Text2Graph:
                         print(clean_triplet)
                         print(len(clean_triplet))
                 else:
-                    print(f"⚠️ 三元组长度不足3，跳过: {triplet}")
+                    #print(f"⚠️ 三元组长度不足3，跳过: {triplet}")
+                    pass
 
             triplets.extend(new_triplets)
 
@@ -545,7 +690,22 @@ class Text2Graph:
                             entity2type[ent] = entities_from_response[ent]
                         else:
                             # 调用大模型补全实体类型
-                            entity_type = self._ask_entity_type(ent, chunk, MAX_RETRIES)
+                            entity_type, type_metric = self._ask_entity_type(ent, chunk, MAX_RETRIES)
+                            total_calls += type_metric.get("call_count", 0)
+                            total_retries += type_metric.get("retry_count", 0)
+                            total_llm_elapsed_ms += type_metric.get("llm_elapsed_ms", 0) or 0
+                            tpt = type_metric.get("prompt_tokens")
+                            tct = type_metric.get("completion_tokens")
+                            ttt = type_metric.get("total_tokens")
+                            if isinstance(tpt, int):
+                                prompt_tokens_sum += tpt
+                                token_observed = True
+                            if isinstance(tct, int):
+                                completion_tokens_sum += tct
+                                token_observed = True
+                            if isinstance(ttt, int):
+                                total_tokens_sum += ttt
+                                token_observed = True
                             entity2type[ent] = entity_type
             
             each_dataset[file_name]["parsing_rate"] = (idx + 1) / len(self.text_chunks)
@@ -562,233 +722,434 @@ class Text2Graph:
         # ======================
         entity2id = {ent: i + 1 for i, ent in enumerate(entity2type.keys())}
 
-        print(f"✅ 提取完成，共 {len(triplets)} 个三元组，{len(entity2id)} 个实体")
-        return triplets, entity2id, entity2type
+        #  print(f"✅ 提取完成，共 {len(triplets)} 个三元组，{len(entity2id)} 个实体")
+        elapsed_ms = int((time.perf_counter() - t_total) * 1000)
+        text_bytes = os.path.getsize(self.file_path) if os.path.exists(self.file_path) else None
+        text_chars = sum(len(c) for c in self.text_chunks)
+        parse_metrics = {
+            "provider": self.provider,
+            "model": self.model_name,
+            "chunk_count": len(self.text_chunks),
+            "llm_call_count": total_calls,
+            "llm_elapsed_ms": total_llm_elapsed_ms,
+            "retry_count": total_retries,
+            "elapsed_ms": elapsed_ms,
+            "text_bytes": text_bytes,
+            "text_chars": text_chars,
+            "markdown_text_bytes": self.markdown_text_bytes,
+            "markdown_text_chars": self.markdown_text_chars,
+            "markdown_file_size_bytes": self.markdown_file_size_bytes,
+            "prompt_tokens": prompt_tokens_sum if token_observed else None,
+            "completion_tokens": completion_tokens_sum if token_observed else None,
+            "total_tokens": total_tokens_sum if token_observed else None,
+        }
+        return triplets, entity2id, entity2type, parse_metrics
 
-    def _ask_entity_type(self, entity: str, chunk: str, MAX_RETRIES = 5) -> str:
-        """向 LLM 查询实体类型"""
+    def extract_graph_and_entity_by_LLM_with_mutiple(self, each_dataset, file_name, each_dataset_schema_file_path, MAX_RETRIES = 5):
+        """
+        从文本数据中提取三元组与实体类型（多线程）。
+
+        Returns:
+            triplets: 合法三元组列表
+            entity2id: 实体 -> ID
+            entity2type: 实体 -> 类型
+            parse_metrics: 聚合解析指标
+        """
+        import yaml
+
+        t_total = time.perf_counter()
+        print(f"开始使用 LLM 从文本中提取知识图谱（多线程，最多 {self.thread_count} 个 chunk 并行）...")
+        n_chunks = len(self.text_chunks)
+        if n_chunks == 0:
+            return [], {}, {}, {
+                "provider": self.provider,
+                "model": self.model_name,
+                "chunk_count": 0,
+                "llm_call_count": 0,
+                "llm_elapsed_ms": 0,
+                "retry_count": 0,
+                "elapsed_ms": 0,
+                "text_bytes": self.source_file_size_bytes,
+                "text_chars": 0,
+                "markdown_text_bytes": self.markdown_text_bytes,
+                "markdown_text_chars": self.markdown_text_chars,
+                "markdown_file_size_bytes": self.markdown_file_size_bytes,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+            }
+
+        def process_one_chunk(idx: int, chunk: str) -> Tuple[int, List[List[str]], Dict[str, str], Dict[str, Any]]:
+            new_triplets: List[List[str]] = []
+            entity2type_local: Dict[str, str] = {}
+            local_calls = 0
+            local_retries = 0
+            local_elapsed_ms = 0
+            local_prompt_tokens = 0
+            local_completion_tokens = 0
+            local_total_tokens = 0
+            local_token_observed = False
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                local_calls += 1
+                response, call_metric = self._generate_with_metrics(prompt_template_str.format(context=chunk))
+                local_elapsed_ms += call_metric.get("elapsed_ms", 0) or 0
+                pt = call_metric.get("prompt_tokens")
+                ct = call_metric.get("completion_tokens")
+                tt = call_metric.get("total_tokens")
+                if isinstance(pt, int):
+                    local_prompt_tokens += pt
+                    local_token_observed = True
+                if isinstance(ct, int):
+                    local_completion_tokens += ct
+                    local_token_observed = True
+                if isinstance(tt, int):
+                    local_total_tokens += tt
+                    local_token_observed = True
+
+                if not response:
+                    if attempt > 1:
+                        local_retries += 1
+                    continue
+
+                cleaned = response.strip()
+                cleaned = re.sub(r"^```[a-zA-Z]*\n?|```$", "", cleaned, flags=re.MULTILINE).strip()
+                match = re.search(r'\{[\s\S]*\}', cleaned)
+                if not match:
+                    if attempt > 1:
+                        local_retries += 1
+                    continue
+
+                json_str = match.group(0)
+                try:
+                    response_parsed = json.loads(json_str)
+                except json.JSONDecodeError:
+                    if attempt > 1:
+                        local_retries += 1
+                    continue
+
+                if not isinstance(response_parsed, dict):
+                    if attempt > 1:
+                        local_retries += 1
+                    continue
+                response = response_parsed
+                break
+            else:
+                return idx, [], {}, {
+                    "llm_call_count": local_calls,
+                    "llm_elapsed_ms": local_elapsed_ms,
+                    "retry_count": local_retries,
+                    "prompt_tokens": local_prompt_tokens if local_token_observed else None,
+                    "completion_tokens": local_completion_tokens if local_token_observed else None,
+                    "total_tokens": local_total_tokens if local_token_observed else None,
+                }
+
+            entities_from_response = {}
+            if isinstance(response.get("entities"), dict):
+                for entity_type, names in response["entities"].items():
+                    for name in names:
+                        if isinstance(name, str) and name.strip():
+                            entities_from_response[name.strip()] = entity_type.strip().capitalize()
+
+            for triplet in response.get("triplets", []):
+                if not isinstance(triplet, (list, tuple)) or len(triplet) != 3:
+                    continue
+                clean_triplet = []
+                for x in triplet:
+                    if isinstance(x, str):
+                        x_clean = x.strip()
+                        if x_clean:
+                            clean_triplet.append(x_clean.capitalize())
+                    else:
+                        if x is not None:
+                            clean_triplet.append(str(x))
+                if len(clean_triplet) == 3:
+                    new_triplets.append(clean_triplet)
+
+            for head, _, tail in new_triplets:
+                for ent in [head, tail]:
+                    if ent not in entity2type_local:
+                        if ent in entities_from_response:
+                            entity2type_local[ent] = entities_from_response[ent]
+                        else:
+                            entity_type, type_metric = self._ask_entity_type(ent, chunk, MAX_RETRIES)
+                            local_calls += type_metric.get("call_count", 0)
+                            local_retries += type_metric.get("retry_count", 0)
+                            local_elapsed_ms += type_metric.get("llm_elapsed_ms", 0) or 0
+                            tpt = type_metric.get("prompt_tokens")
+                            tct = type_metric.get("completion_tokens")
+                            ttt = type_metric.get("total_tokens")
+                            if isinstance(tpt, int):
+                                local_prompt_tokens += tpt
+                                local_token_observed = True
+                            if isinstance(tct, int):
+                                local_completion_tokens += tct
+                                local_token_observed = True
+                            if isinstance(ttt, int):
+                                local_total_tokens += ttt
+                                local_token_observed = True
+                            entity2type_local[ent] = entity_type
+
+            return idx, new_triplets, entity2type_local, {
+                "llm_call_count": local_calls,
+                "llm_elapsed_ms": local_elapsed_ms,
+                "retry_count": local_retries,
+                "prompt_tokens": local_prompt_tokens if local_token_observed else None,
+                "completion_tokens": local_completion_tokens if local_token_observed else None,
+                "total_tokens": local_total_tokens if local_token_observed else None,
+            }
+
+        results: Dict[int, Tuple[List[List[str]], Dict[str, str]]] = {}
+        yaml_lock = threading.Lock()
+        completed = 0
+        total_calls = 0
+        total_retries = 0
+        total_llm_elapsed_ms = 0
+        prompt_tokens_sum = 0
+        completion_tokens_sum = 0
+        total_tokens_sum = 0
+        token_observed = False
+
+        with ThreadPoolExecutor(max_workers=self.thread_count) as executor:
+            future_to_idx = {
+                executor.submit(process_one_chunk, idx, chunk): idx
+                for idx, chunk in enumerate(self.text_chunks)
+            }
+            for fut in tqdm(as_completed(future_to_idx), total=n_chunks, desc="LLM chunks"):
+                idx, new_triplets, entity2type_local, metric = fut.result()
+                results[idx] = (new_triplets, entity2type_local)
+
+                total_calls += metric.get("llm_call_count", 0)
+                total_retries += metric.get("retry_count", 0)
+                total_llm_elapsed_ms += metric.get("llm_elapsed_ms", 0) or 0
+                pt = metric.get("prompt_tokens")
+                ct = metric.get("completion_tokens")
+                tt = metric.get("total_tokens")
+                if isinstance(pt, int):
+                    prompt_tokens_sum += pt
+                    token_observed = True
+                if isinstance(ct, int):
+                    completion_tokens_sum += ct
+                    token_observed = True
+                if isinstance(tt, int):
+                    total_tokens_sum += tt
+                    token_observed = True
+
+                with yaml_lock:
+                    completed += 1
+                    each_dataset[file_name]["parsing_rate"] = completed / n_chunks
+                    output_file = [each_dataset[k] for k in each_dataset]
+                    final_schema = {"datasets": output_file}
+                    with open(each_dataset_schema_file_path, "w", encoding="utf-8") as f:
+                        yaml.dump(final_schema, f, sort_keys=False, allow_unicode=True)
+
+        triplets: List[List[str]] = []
+        entity2type: Dict[str, str] = {}
+        for idx in range(n_chunks):
+            if idx not in results:
+                continue
+            new_triplets, entity2type_local = results[idx]
+            triplets.extend(new_triplets)
+            for ent, typ in entity2type_local.items():
+                if ent not in entity2type:
+                    entity2type[ent] = typ
+
+        entity2id = {ent: i + 1 for i, ent in enumerate(entity2type.keys())}
+        elapsed_ms = int((time.perf_counter() - t_total) * 1000)
+        text_bytes = self.source_file_size_bytes
+        text_chars = sum(len(c) for c in self.text_chunks)
+        parse_metrics = {
+            "provider": self.provider,
+            "model": self.model_name,
+            "chunk_count": len(self.text_chunks),
+            "llm_call_count": total_calls,
+            "llm_elapsed_ms": total_llm_elapsed_ms,
+            "retry_count": total_retries,
+            "elapsed_ms": elapsed_ms,
+            "text_bytes": text_bytes,
+            "text_chars": text_chars,
+            "markdown_text_bytes": self.markdown_text_bytes,
+            "markdown_text_chars": self.markdown_text_chars,
+            "markdown_file_size_bytes": self.markdown_file_size_bytes,
+            "prompt_tokens": prompt_tokens_sum if token_observed else None,
+            "completion_tokens": completion_tokens_sum if token_observed else None,
+            "total_tokens": total_tokens_sum if token_observed else None,
+        }
+        return triplets, entity2id, entity2type, parse_metrics
+
+    def _ask_entity_type(self, entity: str, chunk: str, MAX_RETRIES = 5) -> Tuple[str, Dict[str, Any]]:
+        """向 LLM 查询实体类型，并返回该步骤的调用指标。"""
         prompt = prompt_entity_type.format(entity=entity, text_context=chunk)
+        call_count = 0
+        retry_count = 0
+        llm_elapsed_ms = 0
+        prompt_tokens_sum = 0
+        completion_tokens_sum = 0
+        total_tokens_sum = 0
+        token_observed = False
+
         for attempt in range(1, MAX_RETRIES + 1):
-            response = self.llm.generate_response(query=prompt).text
+            call_count += 1
+            response, call_metric = self._generate_with_metrics(prompt)
+            llm_elapsed_ms += call_metric.get("elapsed_ms", 0) or 0
+            pt = call_metric.get("prompt_tokens")
+            ct = call_metric.get("completion_tokens")
+            tt = call_metric.get("total_tokens")
+            if isinstance(pt, int):
+                prompt_tokens_sum += pt
+                token_observed = True
+            if isinstance(ct, int):
+                completion_tokens_sum += ct
+                token_observed = True
+            if isinstance(tt, int):
+                total_tokens_sum += tt
+                token_observed = True
             if response and isinstance(response, str):
-                return response.strip().capitalize()
-        print(f"⚠️ 无法确定实体类型：{entity}，默认设为 Unknown")
-        return "Unknown"
-    
-    def save_graph_with_entity(self, triplets: List[List[str]], entity2id: Dict[str, int], entity2type: Dict[str, str], 
-                               kb_file_yaml: str = None, text_schema_path: str = None):
-        import os, csv, yaml
+                metric = {
+                    "call_count": call_count,
+                    "retry_count": retry_count,
+                    "llm_elapsed_ms": llm_elapsed_ms,
+                    "prompt_tokens": prompt_tokens_sum if token_observed else None,
+                    "completion_tokens": completion_tokens_sum if token_observed else None,
+                    "total_tokens": total_tokens_sum if token_observed else None,
+                }
+                return response.strip().capitalize(), metric
+            if attempt > 1:
+                retry_count += 1
 
-        dir_path = os.path.dirname(self.file_path)
-        base_name = self.graph_name
+        metric = {
+            "call_count": call_count,
+            "retry_count": retry_count,
+            "llm_elapsed_ms": llm_elapsed_ms,
+            "prompt_tokens": prompt_tokens_sum if token_observed else None,
+            "completion_tokens": completion_tokens_sum if token_observed else None,
+            "total_tokens": total_tokens_sum if token_observed else None,
+        }
+        return "Unknown", metric
 
-        entities_csv_path = os.path.join(dir_path, f"{base_name}_accounts.csv")
-        triplets_csv_path = os.path.join(dir_path, f"{base_name}_transactions.csv")
-        graph_name = f"{base_name}"
+    def save_graph_with_entity(
+        self,
+        triplets: List[List[str]],
+        entity2id: Dict[str, int],
+        entity2type: Dict[str, str],
+        graph_schema_file: str,
+    ) -> Dict[str, Any]:
+        """
+        保存实体/三元组到 CSV，并合并写入 graph_schemas.yaml。
+        返回新生成的 schema 字典（含 create_time）。
+        """
+        import csv
+        import yaml
 
-        # -------------------------
-        # 1️⃣ 保存实体 CSV（增加 type 列）
-        # -------------------------
-        if os.path.exists(entities_csv_path):
-            os.remove(entities_csv_path)
-        if os.path.exists(triplets_csv_path):
-            os.remove(triplets_csv_path)
+        process_dir = os.path.dirname(self.file_path)
+        os.makedirs(process_dir, exist_ok=True)
+
+        entities_csv_path = os.path.join(process_dir, f"{self.graph_name}_accounts.csv")
+        triplets_csv_path = os.path.join(process_dir, f"{self.graph_name}_transactions.csv")
+
+        # 过滤非法三元组，并确保端点实体在 entity2id 中有映射
+        valid_triplets: List[List[str]] = []
+        for t in triplets:
+            if not isinstance(t, (list, tuple)) or len(t) != 3:
+                continue
+            head, rel, tail = t
+            if not head or not rel or not tail:
+                continue
+            head_s = str(head).strip()
+            rel_s = str(rel).strip()
+            tail_s = str(tail).strip()
+            if not head_s or not rel_s or not tail_s:
+                continue
+            valid_triplets.append([head_s, rel_s, tail_s])
+
+        if not entity2id:
+            # 兜底：从三元组重建实体 ID
+            entity2id = {}
+            for head, _, tail in valid_triplets:
+                if head not in entity2id:
+                    entity2id[head] = len(entity2id) + 1
+                if tail not in entity2id:
+                    entity2id[tail] = len(entity2id) + 1
+        else:
+            # 如果三元组里出现新实体，补齐 ID 映射，避免 KeyError
+            for head, _, tail in valid_triplets:
+                if head not in entity2id:
+                    entity2id[head] = len(entity2id) + 1
+                if tail not in entity2id:
+                    entity2id[tail] = len(entity2id) + 1
+
         with open(entities_csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["acct_id", "dsply_nm", "type"])
-            for ent, eid in entity2id.items():
-                ent_type = entity2type.get(ent, "OTHER")
-                writer.writerow([eid, ent, ent_type])
-        print(f"✅ 实体 CSV 保存到: {entities_csv_path}")
+            for entity, eid in sorted(entity2id.items(), key=lambda x: x[1]):
+                writer.writerow([eid, entity, entity2type.get(entity, "OTHER")])
 
-        # -------------------------
-        # 2️⃣ 保存三元组 CSV
-        # -------------------------
         with open(triplets_csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["tran_id", "orig_acct", "bene_acct"])
-            for head, rel, tail in triplets:
-                print(head, rel, tail)
-                if head not in entity2id or tail not in entity2id:
-                    continue
-                writer.writerow([entity2id[head], entity2id[tail], rel])
-        print(f"✅ 边 CSV 保存到: {triplets_csv_path}")
+            writer.writerow(["tran_id", "orig_acct", "bene_acct", "predicate"])
+            for idx, (head, rel, tail) in enumerate(valid_triplets, start=1):
+                writer.writerow([idx, entity2id[head], entity2id[tail], rel])
 
-        # -------------------------
-        # 3️⃣ 保存 Graph schema YAML
-        # -------------------------
-        schema_dict ={
-                    "description": f"{graph_name} graph generated from {self.file_path}",
-                    "name": graph_name,
-                    "type": "graph",
-                    "graph_status": "completed",
-                    "create_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "schema": {
-                        "vertex": [
-                            {
-                                "attribute_fields": [],
-                                "format": "csv",
-                                "id_field": "acct_id",
-                                "label_field": "dsply_nm",
-                                "path": entities_csv_path,
-                                "type": "account"
-                            }
-                        ],
-                        "edge": [
-                            {
-                                "attribute_fields": [],
-                                "format": "csv",
-                                "label_field": "bene_acct",
-                                "path": triplets_csv_path,
-                                "source_field": "tran_id",
-                                "target_field": "orig_acct",
-                                "type": "transfer",
-                                "weight_field": None
-                            }
-                        ],
-                        "graph": {
-                            "directed": "true",
-                            "heterogeneous": "false",
-                            "multigraph": "false",
-                            "weighted": "false"
-                        },
-                        "graph_store_info": {
-                            "backend": "nebula_graph",
-                            "edge_count": len(triplets),
-                            "space_name": graph_name,
-                            "status": "success",
-                            "version": "null",
-                            "vertex_count": len(entity2id)
-                        }
-                    }
-                }
-
-        if kb_file_yaml is None:
-            schema_path = os.path.join(dir_path, f"{base_name}.yaml")
-        else:
-            schema_path = kb_file_yaml
-        """
-        把 new_dataset 追加到 schema_path 指向的 YAML 的 datasets 列表中。
-        - 如果文件不存在，将创建一个新的文件，写入 datasets: [ new_dataset ]
-        - 如果文件已有一个或多个 YAML 文档，函数会读取所有 documents 中的 datasets 并合并，
-        然后以单一文档写回（datasets: [ ... 所有 entries ... ]）。
-        """
-        # 1. 读现有文件（支持 multi-document）
-        existing_datasets: List[Dict[str, Any]] = []
-
-        if os.path.exists(schema_path):
-            with open(schema_path, "r", encoding="utf-8") as f:
-                try:
-                    docs = list(yaml.safe_load_all(f))
-                except Exception as e:
-                    raise RuntimeError(f"读取 YAML 失败: {e}") from e
-
-            for doc in docs:
-                if not doc:
-                    continue
-                # 如果文档是 {'datasets': [...]}
-                if isinstance(doc, dict) and "datasets" in doc and isinstance(doc["datasets"], list):
-                    existing_datasets.extend(doc["datasets"])
-                # 如果文档本身就是一个单个 dataset（不太常见），试着兼容
-                elif isinstance(doc, dict) and ("name" in doc and "schema" in doc):
-                    existing_datasets.append(doc)
-                # 其他结构忽略
-        else:
-            # 文件不存在，我们会创建
-            existing_datasets = []
-
-        existing_datasets.append(schema_dict)
-
-        # 4. 写回为单一文档（覆盖写入）
-        combined = {"datasets": existing_datasets}
-        with open(schema_path, "w", encoding="utf-8") as f:
-            yaml.dump(combined, f, allow_unicode=True, sort_keys=False)
-
-        
-        new_dataset = {
-            "description": f"{self.graph_name} documents.",
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_schema = {
+            "description": f"{self.graph_name} graph generated from {self.file_path}",
             "name": self.graph_name,
-            "type": "text",
+            "type": "graph",
+            "graph_status": "completed",
+            "create_time": now_str,
             "schema": {
-                "path": self.md_file_path,
-                "origin file path": self.file_path,
-                "format": "txt",
-                "encoding": "utf-8"
-            }
+                "vertex": [
+                    {
+                        "attribute_fields": ["type"],
+                        "format": "csv",
+                        "id_field": "acct_id",
+                        "label_field": "dsply_nm",
+                        "path": entities_csv_path,
+                        "original_path": self.file_path,
+                        "type": "account",
+                    }
+                ],
+                "edge": [
+                    {
+                        "attribute_fields": [],
+                        "format": "csv",
+                        "label_field": "predicate",
+                        "path": triplets_csv_path,
+                        "original_path": self.file_path,
+                        "source_field": "orig_acct",
+                        "target_field": "bene_acct",
+                        "type": "transfer",
+                        "weight_field": None,
+                    }
+                ],
+                "graph": {
+                    "directed": "true",
+                    "heterogeneous": "false",
+                    "multigraph": "false",
+                    "weighted": "false",
+                },
+                "graph_store_info": {
+                    "backend": "nebula_graph",
+                    "edge_count": len(valid_triplets),
+                    "space_name": self.graph_name,
+                    "status": "success",
+                    "version": "null",
+                    "vertex_count": len(entity2id),
+                },
+            },
         }
 
-        if text_schema_path is not None:
-            schema_yaml_path = text_schema_path
-            import yaml
-            datasets = []
-            if os.path.exists(schema_yaml_path):
-                try:
-                    with open(schema_yaml_path, "r", encoding="utf-8") as f:
-                        yaml_content = yaml.safe_load(f)
-                        if yaml_content and "datasets" in yaml_content:
-                            datasets = yaml_content["datasets"]
-                except Exception as e:
-                    print(f"读取 YAML 失败: {e}")
+        existing = []
+        if os.path.exists(graph_schema_file):
+            with open(graph_schema_file, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                datasets = loaded.get("datasets")
+                if isinstance(datasets, list):
+                    existing = [d for d in datasets if d.get("name") != self.graph_name]
 
-            datasets.append(new_dataset)
-            final_schema = {"datasets": datasets}
+        existing.append(new_schema)
+        with open(graph_schema_file, "w", encoding="utf-8") as f:
+            yaml.dump({"datasets": existing}, f, sort_keys=False, allow_unicode=True)
 
-            with open(schema_yaml_path, "w", encoding="utf-8") as f:
-                yaml.dump(final_schema, f, sort_keys=False, allow_unicode=True)
-
-        return schema_dict
-
-
-if __name__ == '__main__':
-    text_2_graph = Text2Graph(
-        # file_path='./aag/data_pipeline/data_transformer/text_2_graph/debug_file/example.txt',
-        file_path='./aag/data_pipeline/data_transformer/text_2_graph/debug_file/example.docx',
-        # file_path='./aag/data_pipeline/data_transformer/text_2_graph/debug_file/example.pdf',
-        graph_name='example',
-        llm_name='llama3:8b',
-        chunk_size=512
-    )
-    # text_2_graph.save_triplet(text_2_graph.extract_graph())
-    triplets, entity2id, entity2type =  text_2_graph.extract_graph_and_entity_by_LLM()
-    text_2_graph.save_graph_with_entity(triplets, entity2id, entity2type, "./aag/data_pipeline/data_transformer/text_2_graph/debug_file/")
-
-
-
-"""
-pip install python-docx
-pip install mammoth
-pip install PyMuPDF
-
-pip install 'markitdown[all]'
-
-执行代码：python -m aag.data_pipeline.data_transformer.text_2_graph.text_2_graph
-
-
-git命令示例：
-git stash push -m "backup before pull"
-git pull origin main
-
-LLM output:
-
-Here is the output:
-
-```
-{
-"entities": {
-    "ORGANIZATION": ["LSU", "Purdue"],
-    "DATE": ["December 4, 2022"],
-    "COUNTRY": ["United States"]
-},
-"triplets": [
-    ["LSU", "PLAYED_AGAINST", "Purdue"],
-    ["Quad Wilson", "PICKED_OFF", "Jack Albers"],
-    ["Quad Wilson", "RETURNED", "99 yards"],
-    ["Quad Wilson", "SCORED_TOUCHDOWN", "63-7"],
-    ["2022-23 season", "ENDED_WITH", "Citrus Bowl victory"]
-]
-}
-```
-
-Let me know if you have any questions or need further clarification!
-
-"""
+        return new_schema

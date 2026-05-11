@@ -1046,7 +1046,14 @@ def api_parse_control():
             {
                 "action": "parsing_file",
                 "file_name": file_name,
-                "ds_name": kb_name
+                "ds_name": kb_name,
+                "type": "ollama",
+                "api_key": "YOUR_API_KEY",
+                "base_url": "YOUR_BASE_URL",
+                "llm_name": "llama3.1:70b",
+                "mode":"single",
+                "thread_count": 1,
+                "chunk_size": 3072
             }
         ))
         asyncio.run(server_Test.handler(socketserver))
