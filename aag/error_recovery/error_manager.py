@@ -12,9 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def prepare_error_info(error: Exception, *, location: Optional[str] = None, hint: Optional[str] = None) -> Dict[str, Any]:
-    """
-    最小结构化错误信息：够用、可扩展
-    """
     info = {
         "error_type": type(error).__name__,
         "error": str(error),
@@ -28,10 +25,6 @@ def prepare_error_info(error: Exception, *, location: Optional[str] = None, hint
 
 
 class ErrorRecovery:
-    """
-    统一入口（现在支持：块级重试 + prompt 增强 + base_prompt trace）
-    未来你可以在这里加：多步回滚（execute_step / rollback_to / checkpoint 等）
-    """
     def __init__(self, *, trace_maxlen: int = 200):
         self.trace = PromptTraceBuffer(maxlen=trace_maxlen)
 
@@ -50,10 +43,6 @@ class ErrorRecovery:
         error_history: List[Dict[str, Any]],
         operation_type: str = "generic",
     ) -> Optional[str]:
-        """
-        从 trace 获取 base_prompt，再注入错误信息。
-        如果 trace 没记录到 prompt，则返回 None（调用方可退回到“自己重建 base_prompt”）
-        """
         base_prompt = self.get_last_base_prompt(fn_name)
         if not base_prompt:
             return None
@@ -101,3 +90,93 @@ class ErrorRecovery:
                     logger.error("❌ %s failed after %d attempts", name, max_attempts)
 
         raise last_exc
+
+    # ---------- Cross-step recovery (DAG-level) ----------
+    def _collect_descendants(self, dag: Any, step_id: int) -> List[int]:
+        """Collect all descendant step ids via dag.children_of()."""
+        descendants: set[int] = set()
+        queue: List[int] = list(dag.children_of(step_id))
+        while queue:
+            cur = queue.pop()
+            if cur in descendants:
+                continue
+            descendants.add(cur)
+            queue.extend(dag.children_of(cur))
+        return list(descendants)
+
+    def decide_cross_step_recovery(
+        self,
+        dag: Any,
+        step_id: int,
+        error_info: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[int]:
+        """
+        Decide which DAG steps should be reset to "pending" for a new round.
+
+        This is intentionally rule-based (minimal & safe) so the recovery module
+        can be evolved without changing scheduler control flow.
+        """
+        context = context or {}
+        error_type = (error_info or {}).get("error_type") or ""
+        stage = (error_info or {}).get("stage") or ""
+
+        # Always include current failing step.
+        target: set[int] = {step_id}
+
+        if error_type == "DEPENDENCY_EMPTY" or stage == "dependency_resolve":
+            # Dependency resolution is empty: rerun its upstream providers and
+            # anything that depends on this step output.
+            for pid in dag.parents_of(step_id):
+                target.add(pid)
+                target.update(dag.ancestors_of(pid))
+            target.update(self._collect_descendants(dag, step_id))
+            return list(target)
+
+        if error_type in {"NUMERIC_EXEC_FAIL", "GRAPH_EXEC_FAIL", "UPSTREAM_FAILED"}:
+            # Rerun from upstream context to ensure generated parameters/tools see
+            # consistent inputs.
+            target.update(dag.ancestors_of(step_id))
+            target.update(self._collect_descendants(dag, step_id))
+            return list(target)
+
+        # Fallback: only rerun current node.
+        return [step_id]
+
+    def apply_cross_step_recovery(
+        self,
+        dag: Any,
+        target_step_ids: List[int],
+        *,
+        reason: str,
+    ) -> None:
+        """Reset target steps in DAG for another global round."""
+        for tid in target_step_ids:
+            try:
+                dag.set_pending(tid)
+                logger.info(f"🔄 Cross-step recovery: reset step {tid} -> pending ({reason})")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to reset step {tid} to pending: {e}")
+
+    def global_recover(
+        self,
+        dag: Any,
+        step_id: int,
+        error_info: Dict[str, Any],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        reason: Optional[str] = None,
+    ) -> List[int]:
+        """
+        Decide + apply cross-step recovery in one call.
+        Returns the target step ids that were reset.
+        """
+        targets = self.decide_cross_step_recovery(dag, step_id, error_info, context=context)
+        if not targets:
+            return []
+        self.apply_cross_step_recovery(
+            dag,
+            targets,
+            reason=reason or f"cross_step_recovery(error_type={error_info.get('error_type')})",
+        )
+        return targets

@@ -1126,9 +1126,12 @@ class Scheduler:
 
         return analysis_result
     
-    async def _run_algorithm_pipeline2(self):
-        analysis_result = ""
-        analysis_blocks: List[str] = []
+
+    async def _run_algorithm_pipeline2(self, global_round: int = 0):
+        max_global_rounds = 3
+        analysis_blocks: Dict[str, Dict[str, Any]] = {}
+
+        logger.info(f"🧩 _run_algorithm_pipeline2 global_round={global_round}/{max_global_rounds}")
 
         for step_id in self.dag.topological_order():
             step = self.dag.steps[step_id]
@@ -1174,7 +1177,7 @@ class Scheduler:
                     self.dag.set_failed(step_id, error_msg)
                     continue
                 
-                # logger.info(f"tool_description:{tool_description}")
+                logger.info(f"tool_description:{tool_description}")
 
                 try:
                     await self._prepare_graph_for_execution(
@@ -1256,6 +1259,10 @@ class Scheduler:
                     is_has_extract_code = bool(post_processing_info.get("is_calculate"))
                     output_schema = post_processing_info.get("output_schema") or {}
 
+                    logger.info(
+                        f"✅ Generated post-processing code: {post_processing_info.get('code')}"
+                    )
+
                     tool_result = await self.computing_engine.run_algorithm(
                         step.graph_algorithm,
                         extraction_result.get("parameters", {}),
@@ -1307,6 +1314,20 @@ class Scheduler:
                 
                 graph_deps = data_dependency_context.get("graph_dependencies", [])
                 param_deps = data_dependency_context.get("parameter_dependencies", [])
+                if data_dependency_parents and not graph_deps and not param_deps:
+                    dep_empty_reason = "Dependency resolution returned empty graph/parameter dependencies"
+                    logger.error(f"❌ Step {step_id} numeric analysis: {dep_empty_reason}")
+                    self.dag.set_failed(step_id, dep_empty_reason)
+                    if self.error_recovery and global_round < max_global_rounds:
+                        self.error_recovery.global_recover(
+                            self.dag,
+                            step_id,
+                            {"error_type": "DEPENDENCY_EMPTY", "stage": "dependency_resolve"},
+                            context={"dependency_parents": [p.step_id for p in data_dependency_parents]},
+                            reason="numeric_analysis_dependency_empty",
+                        )
+                        return await self._run_algorithm_pipeline2(global_round=global_round + 1)
+                    continue
                 
                 dependency_items = []
                 execution_data = {}
@@ -1362,7 +1383,7 @@ class Scheduler:
                     if not isinstance(code_result_value, dict):
                         raise RuntimeError("Numeric analysis executor returned non-dict result")
 
-                    if code_result_value.get("error"):
+                    if code_result_value.get("error") or code_result_value.get("result").get("error"):
                         raise RuntimeError(code_result_value.get("error") or "Numeric analysis execution failed")
 
                     return output_schema, code_result_value
@@ -1377,9 +1398,19 @@ class Scheduler:
                 except Exception as e:
                     self.dag.set_failed(step_id, str(e))
                     logger.error(f"❌ Step {step_id} numeric analysis failed: {e}, skipping")
+                    if self.error_recovery and global_round < max_global_rounds:
+                        self.error_recovery.global_recover(
+                            self.dag,
+                            step_id,
+                            {"error_type": "NUMERIC_EXEC_FAIL", "stage": "numeric_execute"},
+                            context={"dependency_parents": [p.step_id for p in data_dependency_parents]},
+                            reason="numeric_analysis_execution_failed",
+                        )
+                        return await self._run_algorithm_pipeline2(global_round=global_round + 1)
                     continue
 
                 result = code_result_value.get("result")
+                logger.info(f"result:{result}")
                 step.add_output(
                     task_type=GraphAnalysisSubType.NUMERIC_COMPUTATION,
                     source="numeric analysis code",
@@ -1398,7 +1429,7 @@ class Scheduler:
                     path=None,
                     validate_schema=True
                 )
-                # Describe expected outputs for the generated function.
+
                 tool_description += "\nExpected output:\n"
                 if output_schema:
                     output_fields = output_schema.get("fields", {}) or {}
@@ -1474,36 +1505,40 @@ class Scheduler:
                     continue
 
             if tool_result is not None:
-                try:
-                    llm_analysis = self.reasoner.generate_answer_from_algorithm_result(
-                        question=step.question,
-                        tool_description=tool_description,
-                        tool_result=tool_result,
-                    )
-                    analysis_blocks.append(llm_analysis)
-                    analysis_result += llm_analysis
-                except Exception as analysis_err:
-                    logger.error(f"❌ Step {step_id} LLM analysis generation failed: {analysis_err}, skipping")
-            else:
-                logger.warning(f"⚠️ Step {step_id} skipped (no result), excluded from final report")
-
+                analysis_blocks[str(step_id)] = {
+                    "question": step.question,
+                    "tool_description": tool_description,
+                    "tool_result": tool_result,
+                }
+            #     try:
+            #         llm_analysis = self.reasoner.generate_answer_from_algorithm_result(
+            #             question=step.question,
+            #             tool_description=tool_description,
+            #             tool_result=tool_result,
+            #         )
+            #         analysis_blocks.append(llm_analysis)
+            #         analysis_result += llm_analysis
+            #     except Exception as analysis_err:
+            #         logger.error(f"❌ Step {step_id} LLM analysis generation failed: {analysis_err}, skipping")
+            # else:
+            #     logger.warning(f"⚠️ Step {step_id} skipped (no result), excluded from final report")
+        
         final_question = (
-            "You will be given the concatenated analysis text generated from "
-            "multiple graph analysis steps. Please reorganize it into a single, "
-            "clear and well-structured Markdown report for the end user."
+            "You will be given a mapping of step_id to each step's tool execution output. "
+            "Please reorganize all available step results into a single, clear and well-structured "
+            "Markdown report for the end user. If a step has tool_result=None, skip it."
         )
         final_tool_description = (
-            "This tool_result contains intermediate analysis paragraphs from "
-            "multiple steps of a graph analysis workflow. Summarize and refine "
-            "them into one coherent report."
+            "tool_result is a dict where each key is a step_id and each value contains: "
+            "`question`, `tool_description`, and `tool_result`. Use these to produce the final report."
         )
         final_report = self.reasoner.generate_answer_from_algorithm_result(
             question=final_question,
             tool_description=final_tool_description,
-            tool_result=analysis_result,
+            tool_result=analysis_blocks,
         )
-
         return final_report
+
 
     async def _prepare_graph_for_execution(
         self,

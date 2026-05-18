@@ -1226,7 +1226,7 @@ class Reasoner:
         vertex_schema: Dict[str, str], 
         edge_schema: Dict[str, str],
         error_history: Optional[List[Dict[str, Any]]] = None, 
-        trace: Optional[Dict[str, Any]] = None, # 用于记录step_id等
+        trace: Optional[Dict[str, Any]] = None, 
     ) -> dict:
         full_prompt = extract_parameters_with_postprocess_promt_new.format(
             question=question,
@@ -1251,7 +1251,7 @@ class Reasoner:
         edge_schema: Dict[str, str],
         dependency_parameters: Dict[str, Any],
         error_history: Optional[List[Dict[str, Any]]] = None,
-        trace: Optional[Dict[str, Any]] = None, # 用于记录step_id等
+        trace: Optional[Dict[str, Any]] = None,
     ) -> dict:
         """Merge dependency parameters with extracted parameters and generate post-processing code."""
         full_prompt = merge_parameters_with_dependencies_prompt.format(

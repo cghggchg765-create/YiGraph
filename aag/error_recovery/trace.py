@@ -15,9 +15,9 @@ class PromptTraceItem:
 
 class PromptTraceBuffer:
     """
-    运行时记录“实际渲染后的 base_prompt”，用于：
-    - debug / 可观测性
-    - retry 时按 fn_name 找到最近一次 base_prompt，再注入错误信息构造 enhanced_prompt
+    Records the rendered base_prompt at runtime for:
+    - debug / observability
+    - on retry, looking up the latest base_prompt by fn_name and building an enhanced_prompt with error context
     """
     def __init__(self, maxlen: int = 200):
         self.maxlen = maxlen

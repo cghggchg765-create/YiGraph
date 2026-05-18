@@ -35,9 +35,9 @@ retrieval:
     # Neo4j for graph queries (e.g. Cypher in interactive mode)
     neo4j:
       enabled: true
-      uri: "bolt://202.199.13.237:7687"
-      user: "neo4j"
-      password: "12345678"
+      uri: "bolt://localhost:7687"              # Neo4j Bolt URI; replace host/port with your instance
+      user: "neo4j"                             # Neo4j username
+      password: "your-neo4j-password-here"      # Neo4j password; do not commit real credentials
 
   # Embedding model for RAG and vector retrieval
   embedding:

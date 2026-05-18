@@ -73,7 +73,7 @@ YiGraph will not indiscriminately build all raw data into one large graph. It wi
 
 ### 4. Rich Graph Algorithm Library
 
-Built-in **100+ graph algorithms** covering 11 major categories, providing professional algorithm support for various graph analysis scenarios:
+Built-in **200+ graph algorithms** covering 21 major categories, providing professional algorithm support for various graph analysis scenarios. The table below lists only a subset of representative categories; see the online documentation for the complete list.
 
 | Algorithm Category | Number of Algorithms | Typical Algorithms | Application Scenarios |
 |---------|---------|---------|---------|
@@ -110,20 +110,20 @@ The system will automatically extract entities and relationships from raw data t
 
 ## 🎯 Version Release
 
-### v0.1.0 (Current Version)
+### v1.1.0 (Current Version)
 
 **Core Capabilities**
 - ✅ Complete graph computing engine (based on NetworkX and  Neo4j)
 - ✅ Intelligent task planning and execution
-- ✅ 100+ graph algorithms support, covering 11 major categories
+- ✅ 200+ graph algorithms support, covering 11 major categories
 - ✅ Multi-data source support (graph/text)
 - ✅ Interactive dialogue interface
 
 ### Roadmap
 
-**v0.2.0 (Planned)**
-- 🔄 Expand the graph algorithm library to 200–300 algorithms
-- 🔄 Add an integrated graph learning module (training/inference)
+**v2.0.0 (Planned)**
+- 🔄 Enhanced interactive user interface
+- 🔄 Dynamic expansion of the algorithm knowledge base
 
 
 ---
